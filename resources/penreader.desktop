@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PenReader
+Comment=PDF reader with pen notes, English & Tamil dictionary, synced with Google Drive
+Exec=penreader %f
+Icon=penreader
+Terminal=false
+Categories=Office;Viewer;Education;
+MimeType=application/pdf;

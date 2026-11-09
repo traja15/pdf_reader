@@ -1,0 +1,115 @@
+#pragma once
+
+#include "ui/ToolSettings.h"
+
+#include <QHash>
+#include <QMainWindow>
+#include <QPointer>
+#include <QTimer>
+#include <functional>
+
+class AppContext;
+class DefinitionPanel;
+class LibraryView;
+class ReaderView;
+class VocabWindow;
+class QAction;
+class QActionGroup;
+class QDialog;
+class QDockWidget;
+class QLabel;
+class QLineEdit;
+class QTreeWidget;
+class QTabWidget;
+class QToolBar;
+struct Document;
+struct PickedWord;
+
+/// Tabbed main window: a permanent Home tab plus one tab per open PDF.
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+public:
+    explicit MainWindow(AppContext &ctx, QWidget *parent = nullptr);
+
+    /// Imports a PDF from disk and opens it in a tab.
+    void openFile(const QString &path);
+    /// Opens a library document in a tab (or switches to its tab), downloading it first if needed.
+    void openDocument(const QString &docKey, int page = -1, bool activate = true);
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
+
+private:
+    void buildActions();
+    void buildToolbars();
+    void buildMenus();
+    ReaderView *currentReader() const;
+    ReaderView *readerFor(const QString &docKey) const;
+    QList<ReaderView *> readers() const;
+    void addReaderTab(const Document &doc, int page, bool activate);
+    void closeTab(int index);
+    void downloadAndOpen(const Document &doc, int page, bool activate);
+    void showDefinition(ReaderView *reader, const PickedWord &picked);
+    void showWord(const QString &word);
+    void lookUpWordDialog();
+    void showVocab();
+    void setTools(const ToolSettings &tools);
+    void toggleFullScreen();
+    void signInOrOut();
+    void showSignInDialog(const QUrl &url, bool browserOpened);
+    void chooseClientFile();
+    void onTabChanged();
+    void updateReaderActions();
+    void updateToolActions();
+    void updateSyncStatus();
+    void saveSession();
+    void restoreSession();
+
+    // Keyboard, search bar, contents, settings
+    QAction *command(const QString &id, const QString &text, const QString &iconName = {});
+    void readerCommand(const QString &id, const QString &text, std::function<void(ReaderView *)> run);
+    void applySettings();
+    void openFindBar(bool backward);
+    void closeFindBar();
+    void updateContents();
+    void showShortcutHelp();
+    void showSettings();
+    void onEscape();
+
+    AppContext &m_ctx;
+    QTabWidget *m_tabs;
+    LibraryView *m_home;
+    QDockWidget *m_dictDock;
+    DefinitionPanel *m_definition;
+    QPointer<VocabWindow> m_vocab;
+    QPointer<QDialog> m_signInDialog;
+    QToolBar *m_homeBar;
+    QToolBar *m_readerBar;
+    QLabel *m_pageLabel;
+    QLabel *m_zoomLabel;
+    QLabel *m_syncLabel;
+    QTimer m_periodicSync;
+    QToolBar *m_findBar;
+    QLineEdit *m_findEdit;
+    QLabel *m_findStatus;
+    bool m_findBackward = false;
+    QDockWidget *m_contentsDock;
+    QTreeWidget *m_contents;
+    QHash<QString, QAction *> m_commands;  ///< command id -> action (shortcuts come from Commands)
+    QList<QAction *> m_readerOnly;         ///< disabled on the Home tab
+    ToolSettings m_tools;
+    bool m_closingAfterSync = false;
+    bool m_dockWasVisible = false;
+    bool m_restoring = false;
+
+    QAction *m_openAct, *m_syncAct, *m_signAct, *m_clientFileAct, *m_quitAct, *m_settingsAct, *m_helpAct;
+    QAction *m_homeAct, *m_closeTabAct, *m_nextTabAct, *m_prevTabAct;
+    QAction *m_undoAct, *m_redoAct, *m_clearPageAct;
+    QAction *m_penAct, *m_highlighterAct, *m_eraserAct, *m_lookupToolAct, *m_mouseDrawsAct;
+    QAction *m_zoomInAct, *m_zoomOutAct, *m_fitAct, *m_rotateAct, *m_fullScreenAct;
+    QAction *m_lookupAct, *m_vocabAct;
+    QActionGroup *m_toolGroup;
+    QList<QAction *> m_penColorActs, m_highlightColorActs, m_widthActs;
+};
