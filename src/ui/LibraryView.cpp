@@ -5,6 +5,8 @@
 #include "core/VocabStore.h"
 #include "net/GoogleAuth.h"
 #include "ui/Commands.h"
+#include "ui/Theme.h"
+#include "ui/Thumbnails.h"
 
 #include <QApplication>
 #include <QDragEnterEvent>
@@ -42,15 +44,15 @@ QLabel *heading(const QString &text, qreal scale)
     return label;
 }
 
-QIcon icon(const QString &name) { return QIcon(":/resources/icons/" + name + ".svg"); }
+QIcon icon(const QString &name) { return Theme::icon(name); }
 
 } // namespace
 
 LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
-    : QWidget(parent), m_ctx(ctx), m_folder(QSettings().value("ui/homeFolder", kAll).toString())
+    : QWidget(parent), m_ctx(ctx), m_thumbs(new Thumbnails(this)), m_folder(QSettings().value("ui/homeFolder", kAll).toString())
 {
     m_banner = new QFrame;
-    m_banner->setStyleSheet("QFrame { background: #E0F2F1; border-radius: 8px; } QLabel { color: #004D40; }");
+    m_banner->setStyleSheet("QFrame { background: palette(alternate-base); border-radius: 8px; }");
     auto *bannerText = new QLabel("Sign in with Google to keep your PDFs, folders, notes and saved words on all your "
                                   "devices — including the PenReader Android app.");
     bannerText->setWordWrap(true);
@@ -105,13 +107,19 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     crumbRow->addWidget(m_crumb, 1);
     crumbRow->addWidget(m_search);
 
+    // A grid of square tiles: the page each PDF is open at, with its name underneath.
     m_list = new QListWidget;
-    m_list->setIconSize(QSize(32, 32));
-    m_list->setSpacing(3);
+    m_list->setViewMode(QListView::IconMode);
+    m_list->setMovement(QListView::Static);
+    m_list->setResizeMode(QListView::Adjust);
+    m_list->setIconSize(QSize(150, 150));
+    m_list->setGridSize(QSize(178, 226));
+    m_list->setSpacing(6);
+    m_list->setWordWrap(true);
+    m_list->setUniformItemSizes(true);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_list->setAlternatingRowColors(true);
     m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_list->setDragEnabled(true);
+    m_list->setDragEnabled(true); // after setMovement(Static), which turns dragging off
     m_list->setDragDropMode(QAbstractItemView::DragOnly);
     m_list->setDefaultDropAction(Qt::CopyAction);
     m_list->installEventFilter(this);
@@ -176,6 +184,13 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     connect(m_ctx.docs, &DocumentStore::libraryChanged, &m_refreshTimer, qOverload<>(&QTimer::start));
     connect(m_ctx.auth, &GoogleAuth::signedInChanged, this, &LibraryView::refresh);
     connect(m_ctx.vocab, &VocabStore::changed, this, &LibraryView::refreshWords);
+    connect(m_thumbs, &Thumbnails::ready, this, [this](const QString &docKey) {
+        const auto doc = m_ctx.docs->get(docKey);
+        for (int i = 0; doc && i < m_list->count(); ++i) {
+            QListWidgetItem *item = m_list->item(i);
+            if (item->data(kKindRole) == "doc" && item->data(kIdRole) == docKey) item->setIcon(m_thumbs->icon(*doc));
+        }
+    });
     refresh();
     refreshWords();
 }
@@ -304,7 +319,7 @@ void LibraryView::refreshDocuments()
                                              (count == 1 ? QString("1 PDF") : QStringLiteral("%1 PDFs").arg(count)));
             item->setData(kIdRole, f.id);
             item->setData(kKindRole, "folder");
-            item->setSizeHint(QSize(0, 52));
+            item->setToolTip(m_ctx.docs->folderPath(f.id));
             m_list->addItem(item);
         }
     }
@@ -325,23 +340,25 @@ void LibraryView::refreshDocuments()
         QString status = QStringLiteral("Page %1 of %2 · %3% read").arg(d.lastPage + 1).arg(d.pageCount).arg(percent);
         if ((searching || m_folder == kAll) && filed)
             status += " · 📁 " + m_ctx.docs->folderPath(d.folderId);
-        QString iconName = "pdf";
         bool enabled = true;
+        QString badge = QStringLiteral("%1%").arg(percent); // short line under the name
         if (m_open.contains(d.docKey)) {
             status += " · open in a tab";
+            badge += " · open";
         } else if (!d.onDevice() && d.inCloud()) {
             status += " · in the cloud, downloads when opened";
-            iconName = "cloud";
+            badge = "☁ in the cloud";
         } else if (!d.onDevice()) {
             status += " · waiting for the other device to upload it";
+            badge = "waiting for upload";
             enabled = false;
         } else if (!d.inCloud() && m_ctx.auth->isSignedIn()) {
             status += " · uploading…";
         }
-        auto *item = new QListWidgetItem(icon(iconName), d.title + "\n" + status);
+        auto *item = new QListWidgetItem(m_thumbs->icon(d), d.title + "\n" + badge);
         item->setData(kIdRole, d.docKey);
         item->setData(kKindRole, "doc");
-        item->setSizeHint(QSize(0, 52));
+        item->setToolTip(d.title + "\n" + status);
         if (m_open.contains(d.docKey)) {
             QFont f = item->font();
             f.setBold(true);
@@ -367,6 +384,24 @@ void LibraryView::refreshDocuments()
     else
         m_empty->setText("This folder is empty.\n\nDrag PDFs onto it in the folder list, or open a PDF while "
                          "this folder is selected.");
+}
+
+QString LibraryView::selectedDocument() const
+{
+    const QStringList keys = selectedDocKeys();
+    return keys.size() == 1 ? keys.first() : QString();
+}
+
+void LibraryView::renameDocument(const QString &docKey)
+{
+    const auto doc = m_ctx.docs->get(docKey);
+    if (!doc)
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Rename PDF", "Name (changes on all your devices):",
+                                               QLineEdit::Normal, doc->title, &ok);
+    if (ok && !name.trimmed().isEmpty())
+        m_ctx.docs->renameDocument(docKey, name);
 }
 
 QStringList LibraryView::selectedDocKeys() const
@@ -454,6 +489,7 @@ void LibraryView::showDocumentMenu(const QPoint &pos)
         if (!doc) return;
         if (doc->onDevice() || doc->inCloud())
             menu.addAction("Open in a tab", this, [this, key = doc->docKey] { emit openRequested(key); });
+        menu.addAction("Rename…", this, [this, key = doc->docKey] { renameDocument(key); });
         if (m_ctx.docs->folderExists(doc->folderId) && m_folder != doc->folderId)
             menu.addAction(icon("folder"), "Show in “" + m_ctx.docs->folderPath(doc->folderId) + "”", this,
                            [this, id = doc->folderId] { selectFolder(id); });

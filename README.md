@@ -5,6 +5,7 @@ A C++/Qt 6 version of the PenReader Android app. It syncs with the Android app t
 ## Features
 
 - **Tabs:** every PDF opens in its own tab. **Home** is always the first tab. Opening a PDF that's already open switches to its tab. Your open tabs come back when you restart. Shortcuts: Ctrl+Tab / Ctrl+Shift+Tab switch, Ctrl+W closes, Alt+Home goes Home.
+- **Thumbnail grid (on Home):** each PDF is a square tile showing the page you're on, with its name and progress underneath. All PDFs are listed most recently opened first.
 - **Catalogue folders (on Home):** organise PDFs into folders and subfolders (Books → Physics). Folders and each PDF's folder sync to all your devices, including Android.
   - The folder tree on the left shows **All PDFs**, **Unfiled** and your folders, with counts.
   - Drag PDFs onto a folder (select several with Ctrl/Shift), or right-click → **Move to**.
@@ -13,6 +14,13 @@ A C++/Qt 6 version of the PenReader Android app. It syncs with the Android app t
   - **Search all PDFs** finds titles anywhere and shows where each one is filed.
   - Vim keys: `j`/`k` move, `l`/Enter open, `h` goes up a folder.
 - **Recently learnt words** sit next to the catalogue; click one to see its definition.
+- **Dark mode by default:** the app and the PDF pages start dark. In Settings → **Appearance**:
+  - **App theme:** Dark, Light or Follow the system.
+  - **Reading colours:** Dark, Sepia, Original or Custom, with any text (front) and background (back) colour from a colour picker.
+  - A live preview shows the result, and changes apply to open PDFs immediately. On dark pages, dark ink is shown lighter so notes stay readable.
+- **Distraction-free reading:** the toolbar shows only reading tools; everything else is under **⋯** (top right), including all the menus. The menu bar is hidden unless you turn on "Show menu bar" in ⋯.
+  - **Focus mode** (F8, or the button next to ⋯) hides the toolbar, tabs, status bar and side panels, leaving just the PDF. The window keeps its size; F11 is real full screen.
+  - Leave focus mode with F8, Esc, or the faint button in the top-right corner. All keyboard shortcuts keep working in focus mode.
 - **PDF reading:** continuous scroll, zoom (Ctrl + wheel, touchpad or touch pinch), rotate, full screen, search, link following, table of contents, and vim-style keyboard control (see below).
 - **Resume:** each PDF reopens at the exact spot you left it. Positions sync both ways with Android.
 - **Pen notes:** pen (pressure-sensitive), highlighter and eraser, with undo/redo.
@@ -22,6 +30,21 @@ A C++/Qt 6 version of the PenReader Android app. It syncs with the Android app t
 - **Dictionary with English and தமிழ் tabs:** right-click or double-click a word, or use the dictionary tool (D). You get pronunciation audio, examples, synonyms and Tamil meanings. The sources match Android: dictionaryapi.dev with a Wiktionary fallback for English, and Wiktionary plus the bundled offline word list for Tamil. Lookups are cached, so they work offline afterwards.
 - **My Words** (Ctrl+M): saved words with English definition, Tamil meaning, the sentence it came from, and the document and page. You can search (in English or Tamil), sort, and jump back to the page.
 - **Library** (on Home): open PDFs, or drop several at once (each gets a tab). PDFs opened on another device appear here and download on open. You can remove a download or delete a PDF from all devices.
+
+## Smart search (local AI)
+
+**Smart search** (`Ctrl+K`, or the ✦ button) asks questions across the text of every PDF:
+
+- **Passages:** results come from both **meaning** and **keywords**. "Why did prices rise?" finds paragraphs about inflation, and exact names and codes still match. Each result shows the PDF, page and folder; click it to open the PDF at that passage. You can limit a search to one folder (subfolders included).
+- **AI answer:** a local model writes a short answer from the best passages, citing them as [1], [2]…. Click a citation to open that page. Small models can still get things wrong, so check the cited pages.
+- **Everything runs on this computer** with [Ollama](https://ollama.com). Your PDFs never leave it.
+  - Default models: `nomic-embed-text` (~270 MB) to understand passages and `qwen2.5:3b` (~1.9 GB) to write answers.
+  - Change them in **Settings → Smart search**, which can also download them, check Ollama, and rebuild the index.
+  - On a CPU-only laptop an answer takes roughly 15–30 s. `qwen2.5:1.5b` is faster; `qwen2.5:7b` gives better answers if you have the RAM.
+- **Indexing** happens in the background. New PDFs become keyword-searchable within seconds, then are processed for meaning-based search. Without Ollama running, keyword search still works.
+- **Scanned PDFs** (images without a text layer) can't be searched.
+
+Start Ollama with `ollama serve`, or enable its service with `sudo systemctl enable --now ollama`.
 
 ## Keyboard (vim / zathura style)
 
@@ -46,8 +69,10 @@ Vim-style keys are on by default. Turn them off, or change any shortcut, in **Fi
 | `1`–`4`, `5` | Pen, highlighter, eraser, dictionary tool; mouse-draws toggle |
 | `o` | Open PDF |
 | `gt` / `gT` / `gh` | Next tab / previous tab / Home |
+| `Alt+1`–`Alt+8`, `Alt+9` | Go to that tab (`Alt+1` is Home), last tab |
 | `F9` | Table of contents |
-| `F11`, `Esc` | Full screen; Esc leaves full screen, closes search, cancels hints |
+| `F8` | Focus mode: just the PDF |
+| `F11`, `Esc` | Full screen; Esc leaves full screen or focus mode, closes search, cancels hints |
 
 When a vim key collides with a standard one, the vim meaning wins (for example `Ctrl+R` is redo, so rotate uses `r`). With vim keys off, the usual desktop shortcuts apply (`Ctrl+F` search, `F3` next match, `Ctrl+R` rotate, `Ctrl+Z` undo, …). On Home, `j` / `k` move through the library and words lists and `l` or Enter opens.
 
@@ -126,6 +151,8 @@ XDG_DATA_HOME=$T/data XDG_CONFIG_HOME=$T/config QT_QPA_PLATFORM=offscreen \
 | `src/ui/SettingsDialog.cpp` | Settings page |
 | `src/ui/DefinitionPanel.cpp` | English/Tamil dictionary panel, Save to My Words |
 | `src/net/SyncManager.cpp` | Two-way sync, format-compatible with Android |
+| `src/core/SearchIndex.cpp` | Smart search: passages, FTS5 keywords, embeddings, hybrid ranking, background indexer |
+| `src/net/Ollama.cpp`, `src/ui/SmartSearchView.cpp` | Local AI client (embeddings, streaming answers) and the Smart search tab |
 | `src/net/GoogleAuth.cpp` | Desktop OAuth (PKCE plus loopback redirect) |
 | `src/net/Dictionary.cpp`, `TamilDictionary.cpp` | Dictionaries |
 | `src/core/` | SQLite storage (same tables as the Android app) |

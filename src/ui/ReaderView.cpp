@@ -5,6 +5,7 @@
 #include "core/OpenUrl.h"
 #include "ui/PageItem.h"
 #include "ui/Prefs.h"
+#include "ui/Theme.h"
 
 #include <QContextMenuEvent>
 #include <QGraphicsRectItem>
@@ -21,6 +22,7 @@
 #include <QSettings>
 #include <QScrollBar>
 #include <QTabletEvent>
+#include <QToolTip>
 #include <QTouchEvent>
 #include <QUuid>
 #include <QWheelEvent>
@@ -41,7 +43,7 @@ bool isSentenceEnd(QChar c) { return c == '.' || c == '?' || c == '!' || c == '\
 ReaderView::ReaderView(AppContext &ctx, QWidget *parent) : QGraphicsView(parent), m_ctx(ctx)
 {
     setScene(new QGraphicsScene(this));
-    setBackgroundBrush(QColor(0x5f, 0x63, 0x68));
+    setBackgroundBrush(Theme::isDark() ? QColor(0x12, 0x13, 0x14) : QColor(0x5f, 0x63, 0x68));
     setFrameShape(QFrame::NoFrame);
     setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
     setViewportUpdateMode(QGraphicsView::SmartViewportUpdate);
@@ -72,13 +74,33 @@ ReaderView::ReaderView(AppContext &ctx, QWidget *parent) : QGraphicsView(parent)
     });
     setFocusPolicy(Qt::StrongFocus);
     setTools(m_tools);
+
+    // Always-visible scroll bar; dragging it shows which page you'll land on.
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    verticalScrollBar()->setStyleSheet("QScrollBar:vertical { width: 14px; }");
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] {
+        if (!verticalScrollBar()->isSliderDown() || m_pages.isEmpty())
+            return;
+        QToolTip::showText(QCursor::pos() - QPoint(150, 0),
+                           QStringLiteral("Page %1 of %2").arg(m_position.page + 1).arg(m_pages.size()), this);
+    });
+    connect(verticalScrollBar(), &QScrollBar::sliderReleased, this, [] { QToolTip::hideText(); });
 }
 
 ReaderView::~ReaderView() { close(); }
 
+void ReaderView::refreshColors()
+{
+    setBackgroundBrush(Theme::isDark() ? QColor(0x12, 0x13, 0x14) : QColor(0x5f, 0x63, 0x68));
+    for (PageItem *item : std::as_const(m_pages)) {
+        item->clearImage(); // re-rendered in the new colours as they come into view
+        item->update();
+    }
+}
+
 // ---------------------------------------------------------------- open / close
 
-bool ReaderView::open(const Document &doc, int initialPage)
+bool ReaderView::open(const Document &doc, int initialPage, double initialOffset)
 {
     close();
     auto *pdf = new QPdfDocument(this);
@@ -97,7 +119,7 @@ bool ReaderView::open(const Document &doc, int initialPage)
         PageItem *item = m_pages[page];
         // Ignore stale lower/higher-resolution renders that finished late.
         if (item->requestedWidth() == image.width() || item->renderedWidth() == 0)
-            item->setImage(image);
+            item->setImage(Theme::recolor(image, Theme::pageColors())); // dark / sepia / custom reading colours
     });
 
     for (int i = 0; i < m_pdf->pageCount(); ++i)
@@ -109,12 +131,13 @@ bool ReaderView::open(const Document &doc, int initialPage)
             m_pages[it.key()]->setStrokes(it.value());
 
     const int last = m_pages.size() - 1;
-    m_start = initialPage >= 0 ? Position{qBound(0, initialPage, last), 0}
+    m_start = initialPage >= 0 ? Position{qBound(0, initialPage, last), qBound(0.0, initialOffset, 1.0)}
                                : Position{qBound(0, doc.lastPage, last), qBound(0.0, doc.lastOffset, 1.0)};
     m_position = m_start;
     m_userMoved = false;
     m_undo.clear();
     m_redo.clear();
+    m_zoom = qBound(kMinZoom, QSettings().value("zoom/" + doc.docKey, 1.0).toDouble(), kMaxZoom); // per-PDF zoom
     m_restoring = true; // layout changes below aren't the user scrolling
     applyTransform();
     m_restoring = false;
@@ -183,6 +206,7 @@ void ReaderView::applyTransform()
     t.rotate(m_rotation);
     t.scale(fit * m_zoom, fit * m_zoom);
     setTransform(t);
+    if (m_pdf) QSettings().setValue("zoom/" + m_doc.docKey, m_zoom);
     emit zoomChanged(qRound(m_zoom * 100));
 }
 

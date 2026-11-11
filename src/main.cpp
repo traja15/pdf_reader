@@ -1,9 +1,9 @@
 #include "core/AppContext.h"
 #include "ui/MainWindow.h"
+#include "ui/Theme.h"
 
 #include <QApplication>
 #include <QMessageBox>
-#include <QStyleFactory>
 
 int main(int argc, char *argv[])
 {
@@ -11,7 +11,7 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName("PenReader");
     QApplication::setApplicationName("PenReader");
     QApplication::setApplicationVersion("0.1.0");
-    QApplication::setStyle(QStyleFactory::create("Fusion"));
+    Theme::apply(); // dark by default; Settings → Appearance
     QApplication::setWindowIcon(QIcon(":/resources/icons/app.svg"));
 
     std::unique_ptr<AppContext> ctx;

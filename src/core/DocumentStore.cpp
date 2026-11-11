@@ -146,6 +146,20 @@ Document DocumentStore::importFile(const QString &path, const QString &driveFile
     return d;
 }
 
+void DocumentStore::renameDocument(const QString &docKey, const QString &title)
+{
+    auto d = get(docKey);
+    QString clean = title.trimmed();
+    if (clean.endsWith(".pdf", Qt::CaseInsensitive)) clean.chop(4);
+    clean = clean.trimmed();
+    if (!d || clean.isEmpty() || clean == d->title)
+        return;
+    d->title = clean;
+    d->updatedAt = now();
+    upsert(*d);
+    emit needsSync();
+}
+
 void DocumentStore::markOpened(const QString &docKey)
 {
     if (auto d = get(docKey)) {

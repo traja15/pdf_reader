@@ -13,15 +13,24 @@
 #include "ui/MainWindow.h"
 #include "ui/ReaderView.h"
 #include "ui/SettingsDialog.h"
+#include "ui/Theme.h"
+#include "ui/SmartSearchView.h"
+#include "core/SearchIndex.h"
+#include "net/Ollama.h"
 
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QPdfDocument>
 #include <QPdfSelection>
 #include <QSettings>
 #include <QLineEdit>
 #include <QScrollBar>
+#include <QDockWidget>
+#include <QMenuBar>
+#include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTest>
 #include <QToolBar>
@@ -76,6 +85,29 @@ int main(int argc, char *argv[])
               "decode Android pen stroke (ARGB colour as unsigned long)");
         const QVector<Stroke> round = InkCodec::decode(InkCodec::encode(s));
         check(round.size() == 2 && round[0].points == s[0].points && round[1].color == s[1].color, "encode/decode round trip");
+    }
+
+    Theme::apply(); // as main() does
+    // 0. Appearance: dark by default, page recolouring and ink visibility.
+    {
+        check(Theme::isDark() && QApplication::palette().color(QPalette::Window).lightness() < 80, "theme: dark by default");
+        const Theme::PageColors dark = Theme::pageColors();
+        check(!dark.original && Theme::pageMode() == "dark", "reading colours: dark pages by default");
+        QImage page(2, 1, QImage::Format_RGB32);
+        page.setPixel(0, 0, qRgb(255, 255, 255)); // paper
+        page.setPixel(1, 0, qRgb(0, 0, 0));       // text
+        const QImage out = Theme::recolor(page, dark);
+        check(QColor(out.pixel(0, 0)) == dark.background && QColor(out.pixel(1, 0)) == dark.text,
+              "recolour: white paper → background colour, black text → text colour");
+        // Real PDF renders have a transparent background: empty paper must become the background too.
+        QImage transparent(2, 1, QImage::Format_ARGB32_Premultiplied);
+        transparent.setPixel(0, 0, qRgba(0, 0, 0, 0));   // empty (transparent) paper
+        transparent.setPixel(1, 0, qRgba(0, 0, 0, 255)); // black text
+        const QImage out2 = Theme::recolor(transparent, dark);
+        check(QColor(out2.pixel(0, 0)) == dark.background && QColor(out2.pixel(1, 0)) == dark.text,
+              "recolour: transparent paper → background (text stays visible)");
+        check(Theme::inkColor(Qt::black, false).lightness() > 128, "ink: black pen shows light on a dark page");
+        check(Theme::inkColor(QColor(0x66FFEB3B), true) == QColor(0x66FFEB3B), "ink: highlighter colours unchanged");
     }
 
     AppContext ctx;
@@ -166,9 +198,42 @@ int main(int argc, char *argv[])
         check(tabs->count() == 3 && tabs->currentWidget() == reader, "tabs: reopening a PDF switches to its tab (no duplicate)");
         const QStringList session = QSettings().value("session/openDocs").toStringList();
         check(session == QStringList{doc.docKey, second.docKey}, "tabs: session remembers both open tabs");
+        // Alt+number switches tabs (Alt+1 = Home, Alt+9 = last).
+        QTest::keyClick(&window, Qt::Key_1, Qt::AltModifier);
+        check(tabs->currentIndex() == 0, "Alt+1 goes to Home");
+        QTest::keyClick(&window, Qt::Key_2, Qt::AltModifier);
+        check(tabs->currentIndex() == 1, "Alt+2 goes to the second tab");
+        QTest::keyClick(&window, Qt::Key_9, Qt::AltModifier);
+        check(tabs->currentIndex() == tabs->count() - 1, "Alt+9 goes to the last tab");
+
+        // Focus mode: F8 hides everything but the PDF; Esc brings it back.
+        tabs->setCurrentWidget(reader);
+        reader->setFocus();
+        QTest::qWait(100);
+        auto *readerBar = window.findChild<QToolBar *>("readerBar");
+        check(!window.menuBar()->isVisible() && readerBar->isVisible(), "slim layout: menu bar hidden by default, reader toolbar shown");
+        window.grab().save(outDir + "/shot-toolbar.png");
+        QTest::keyClick(reader, Qt::Key_F8);
+        QTest::qWait(150);
+        check(!readerBar->isVisible() && !tabs->tabBar()->isVisible() && !window.statusBar()->isVisible(),
+              "focus mode (F8): toolbar, tabs and status bar hidden");
+        const int vbefore = reader->verticalScrollBar()->value();
+        QTest::keyClick(reader, Qt::Key_J);
+        check(reader->verticalScrollBar()->value() > vbefore, "focus mode: keys still work (j scrolls)");
+        window.grab().save(outDir + "/shot-focus.png");
+        QTest::keyClick(reader, Qt::Key_Escape);
+        QTest::qWait(150);
+        check(readerBar->isVisible() && tabs->tabBar()->isVisible(), "Esc leaves focus mode");
+
+        // Rename: library, tab title, and ".pdf" stripped.
+        ctx.docs->renameDocument(second.docKey, "  Second document.pdf ");
+        QTest::qWait(100);
+        check(ctx.docs->get(second.docKey)->title == "Second document", "rename: new title saved (\".pdf\" stripped)");
+        check(tabs->tabText(2) == "Second document", "rename: open tab title updates");
+        check(reader->verticalScrollBarPolicy() == Qt::ScrollBarAlwaysOn, "reader scroll bar always visible");
         window.grab().save(outDir + "/shot-tabs.png");
         tabs->setCurrentIndex(0);
-        wait(300);
+        wait(2500); // thumbnails render in the background
         window.grab().save(outDir + "/shot-home.png");
         tabs->setCurrentWidget(reader);
         wait(500);
@@ -255,8 +320,84 @@ int main(int argc, char *argv[])
         wait(3000); // dictionary lookups
         window.grab().save(outDir + "/shot-dictionary.png");
     }
+    // ---- Smart search (needs Ollama with the embedding + answer models for the AI parts) ----
     {
-        SettingsDialog settings(&window);
+        const QVector<Chunk> chunks = SearchIndex::chunkPages({QString("word ").repeated(400), "too short", ""});
+        check(chunks.size() == 3 && chunks[0].page == 0 && chunks[1].pagePos > 0, "chunking: 400 words → 3 overlapping passages");
+
+        ctx.indexer->start();
+        QElapsedTimer t;
+        t.start();
+        while ((ctx.indexer->isRunning() || ctx.indexer->status().isEmpty()) && t.elapsed() < 300000) QTest::qWait(200);
+        std::printf("      index: %s (%lld ms)\n", qUtf8Printable(ctx.indexer->status()), t.elapsed());
+        check(ctx.search->countChunks() > 0, QStringLiteral("index has %1 passages").arg(ctx.search->countChunks()));
+        const int embedded = ctx.search->countEmbedded(AiPrefs::embeddingModel());
+        check(embedded == ctx.search->countChunks(), QStringLiteral("all passages embedded (%1)").arg(embedded));
+
+        // Keyword: an exact word from the PDF.
+        const QString keyword = "Functionalities";
+        const auto keywordHits = ctx.search->search(keyword, {}, AiPrefs::embeddingModel(), {}, 5);
+        check(!keywordHits.isEmpty() && keywordHits[0].docKey == doc.docKey && keywordHits[0].byKeyword,
+              "keyword search finds “" + keyword + "”");
+
+        // Meaning: a paraphrase that shares no exact words with the target passage.
+        const QString question = "Which microcontrollers and wireless chips has this person programmed?";
+        QVector<float> qv;
+        try { qv = Ollama::embed({question}, true).value(0); } catch (...) {}
+        const auto meaningHits = ctx.search->search(question, qv, AiPrefs::embeddingModel(), {}, 5);
+        check(!qv.isEmpty() && !meaningHits.isEmpty() && meaningHits[0].byMeaning,
+              "meaning search answers a paraphrased question (top: page " +
+                  QString::number(meaningHits.value(0).page + 1) + ", " + meaningHits.value(0).text.left(50) + "…)");
+
+        // The Smart search tab with an AI answer.
+        window.showSmartSearch();
+        auto *smart = window.findChild<SmartSearchView *>();
+        bool answered = false;
+        QObject::connect(smart, &SmartSearchView::answerFinished, [&] { answered = true; });
+        smart->search(question);
+        t.restart();
+        while (!answered && t.elapsed() < 240000) QTest::qWait(250);
+        std::printf("      AI answer (%lld ms): %s\n", t.elapsed(), qUtf8Printable(smart->answer().left(300).replace('\n', ' ')));
+        check(smart->hits().size() >= 3, QStringLiteral("Smart search tab shows passages (%1)").arg(smart->hits().size()));
+        check(answered && smart->answer().contains('['), "AI answer arrives with citations like [1]");
+        window.grab().save(outDir + "/shot-smart.png");
+    }
+
+    // ---- Session: quit and reopen, and everything should be where it was ----
+    if (reader && !secondPdf.isEmpty()) {
+        auto *tabs = qobject_cast<QTabWidget *>(window.centralWidget());
+        tabs->setCurrentWidget(reader);
+        reader->goToPage(1, 0.4);
+        reader->zoomIn();
+        const qreal zoom = reader->zoom();
+        emit reader->wordPicked({"ephemeral", 1, {}}); // dictionary panel open on a word
+        QTest::qWait(300);
+        window.close(); // like quitting the app
+
+        MainWindow reopened(ctx);
+        reopened.resize(1280, 860);
+        reopened.show();
+        QTest::qWait(2500); // session restore runs right after start-up
+        auto *tabs2 = qobject_cast<QTabWidget *>(reopened.centralWidget());
+        QStringList titles;
+        for (int i = 0; i < tabs2->count(); ++i) titles << tabs2->tabText(i);
+        std::printf("      reopened tabs: %s\n", qUtf8Printable(titles.join(" | ")));
+        check(titles.size() == 4 && titles[0] == "Home" && titles[1] == "Smart search" && titles.contains("mozilla") &&
+                  titles.contains("Second document"),
+              "session: Home, Smart search and both PDF tabs come back");
+        auto *r2 = qobject_cast<ReaderView *>(tabs2->currentWidget());
+        check(r2 && r2->document().docKey == doc.docKey, "session: the PDF that was showing is the active tab again");
+        check(r2 && r2->currentPage() == 1, QStringLiteral("session: same page (page %1)").arg(r2 ? r2->currentPage() + 1 : 0));
+        check(r2 && qFuzzyCompare(r2->zoom(), zoom), QStringLiteral("session: same zoom (%1%)").arg(qRound((r2 ? r2->zoom() : 0) * 100)));
+        auto *smart2 = reopened.findChild<SmartSearchView *>();
+        check(smart2 && smart2->query().startsWith("Which microcontrollers"), "session: Smart search keeps its question");
+        auto *dict = reopened.findChild<QDockWidget *>("dictionaryDock");
+        check(dict && dict->isVisible(), "session: dictionary panel reopens on its word");
+        reopened.grab().save(outDir + "/shot-reopened.png");
+    }
+
+    {
+        SettingsDialog settings(ctx, &window);
         settings.show();
         QTest::qWait(200);
         settings.grab().save(outDir + "/shot-settings.png");

@@ -23,6 +23,8 @@ public:
     /// [folderId]; one already in the library keeps its folder. Throws on failure.
     Document importFile(const QString &path, const QString &driveFileId = {}, const QString &folderId = {});
     void markOpened(const QString &docKey);
+    /// Renames a PDF in the library (synced to all devices; the file itself is unchanged).
+    void renameDocument(const QString &docKey, const QString &title);
     void saveProgress(const QString &docKey, int page, double offset);
     /// Frees space on this device; the PDF and notes stay in the cloud.
     void removeFromDevice(const QString &docKey);

@@ -2,6 +2,8 @@
 
 #include "core/AppContext.h"
 #include "core/DocumentStore.h"
+#include "core/SearchIndex.h"
+#include "net/Ollama.h"
 #include "net/DriveApi.h"
 #include "net/GoogleAuth.h"
 #include "net/SyncManager.h"
@@ -11,6 +13,8 @@
 #include "ui/Prefs.h"
 #include "ui/ReaderView.h"
 #include "ui/SettingsDialog.h"
+#include "ui/SmartSearchView.h"
+#include "ui/Theme.h"
 #include "ui/VocabWindow.h"
 
 #include <QAction>
@@ -40,13 +44,14 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
 namespace {
 
-QIcon icon(const QString &name) { return QIcon(":/resources/icons/" + name + ".svg"); }
+QIcon icon(const QString &name) { return Theme::icon(name); }
 
 QIcon swatch(quint32 argb)
 {
@@ -68,7 +73,7 @@ QIcon widthIcon(int level)
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setBrush(QColor(0x3c, 0x40, 0x43));
+    p.setBrush(Theme::isDark() ? QColor(0xC9, 0xD1, 0xD6) : QColor(0x3c, 0x40, 0x43));
     p.setPen(Qt::NoPen);
     const qreal r = 2.5 + level * 2.5;
     p.drawEllipse(QPointF(11, 11), r, r);
@@ -160,6 +165,7 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
     buildActions();
     buildToolbars();
     buildMenus();
+    buildMoreMenu();
 
     // Search bar (/ or Ctrl+F): incremental search with match count.
     m_findBar = new QToolBar("Search", this);
@@ -201,6 +207,7 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
     connect(m_home, &LibraryView::myWordsRequested, this, &MainWindow::showVocab);
     connect(m_home, &LibraryView::wordRequested, this, &MainWindow::showWord);
 
+    connect(m_ctx.docs, &DocumentStore::libraryChanged, this, &MainWindow::refreshTabTitles);
     connect(m_ctx.sync, &SyncManager::statusChanged, this, &MainWindow::updateSyncStatus);
     connect(m_ctx.auth, &GoogleAuth::signedInChanged, this, &MainWindow::updateSyncStatus);
     connect(m_ctx.auth, &GoogleAuth::browserSignInStarted, this, &MainWindow::showSignInDialog);
@@ -238,6 +245,8 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
         m_ctx.sync->syncNow();
         restoreSession();
     });
+    // Index PDFs for smart search once the window is up.
+    QTimer::singleShot(4000, this, [this] { if (AiPrefs::autoIndex()) m_ctx.indexer->start(); });
 }
 
 // ---------------------------------------------------------------- actions, toolbars, menus
@@ -245,6 +254,7 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
 QAction *MainWindow::command(const QString &id, const QString &text, const QString &iconName)
 {
     auto *a = new QAction(iconName.isEmpty() ? QIcon() : icon(iconName), text, this);
+    a->setProperty("themeIcon", iconName); // re-tinted when the theme changes
     addAction(a); // shortcuts work even when the action isn't on a visible toolbar or menu
     m_commands.insert(id, a);
     return a;
@@ -295,6 +305,16 @@ void MainWindow::buildActions()
     m_closeTabAct = command("closeTab", "Close tab");
     connect(m_closeTabAct, &QAction::triggered, this, [this] { closeTab(m_tabs->currentIndex()); });
     m_readerOnly << m_closeTabAct;
+    // Alt+1…8 go to that tab (1 = Home), Alt+9 to the last one, like web browsers.
+    for (int n = 1; n <= 9; ++n) {
+        QAction *a = command(QStringLiteral("tab%1").arg(n), n == 9 ? QString("Last tab") : QStringLiteral("Tab %1").arg(n));
+        connect(a, &QAction::triggered, this, [this, n] {
+            const int index = n == 9 ? m_tabs->count() - 1 : n - 1;
+            if (index < m_tabs->count()) m_tabs->setCurrentIndex(index);
+        });
+    }
+    m_renameAct = command("renamePdf", "Rename PDF…");
+    connect(m_renameAct, &QAction::triggered, this, &MainWindow::renamePdf);
     m_nextTabAct = command("nextTab", "Next tab");
     connect(m_nextTabAct, &QAction::triggered, this, [this] { m_tabs->setCurrentIndex((m_tabs->currentIndex() + 1) % m_tabs->count()); });
     m_prevTabAct = command("prevTab", "Previous tab");
@@ -379,11 +399,23 @@ void MainWindow::buildActions()
     m_readerOnly << m_rotateAct;
     m_fullScreenAct = command("fullScreen", "Full screen", "fullscreen");
     connect(m_fullScreenAct, &QAction::triggered, this, &MainWindow::toggleFullScreen);
+    m_focusAct = command("focusMode", "Focus mode — just the PDF", "focus");
+    m_focusAct->setCheckable(true);
+    connect(m_focusAct, &QAction::triggered, this, &MainWindow::toggleFocusMode);
+    m_menuBarAct = new QAction("Show menu bar", this);
+    m_menuBarAct->setCheckable(true);
+    m_menuBarAct->setChecked(QSettings().value("ui/showMenuBar", false).toBool());
+    connect(m_menuBarAct, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue("ui/showMenuBar", on);
+        applyChrome();
+    });
     m_readerOnly << m_fullScreenAct;
     m_lookupAct = command("lookupWord", "Look up a word…", "search");
     connect(m_lookupAct, &QAction::triggered, this, &MainWindow::lookUpWordDialog);
     m_vocabAct = command("myWords", "My Words", "words");
     connect(m_vocabAct, &QAction::triggered, this, &MainWindow::showVocab);
+    m_smartAct = command("smartSearch", "Smart search", "sparkle");
+    connect(m_smartAct, &QAction::triggered, this, &MainWindow::showSmartSearch);
     m_commands.insert("dictionaryPanel", m_dictDock->toggleViewAction());
     addAction(m_dictDock->toggleViewAction());
 
@@ -428,37 +460,69 @@ void MainWindow::buildToolbars()
     m_homeBar->setMovable(false);
     m_homeBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_homeBar->addAction(m_openAct);
+    m_homeBar->addAction(m_smartAct);
     m_homeBar->addAction(m_vocabAct);
     m_homeBar->addAction(m_lookupAct);
     m_homeBar->addAction(m_syncAct);
+    auto *homeSpacer = new QWidget;
+    homeSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_homeBar->addWidget(homeSpacer);
 
     m_readerBar = addToolBar("Reader");
     m_readerBar->setObjectName("readerBar");
     m_readerBar->setMovable(false);
     m_readerBar->setIconSize(QSize(22, 22));
+    // Only what's needed while reading; everything else lives in the ⋯ menu.
     m_readerBar->addAction(m_homeAct);
-    m_readerBar->addAction(m_openAct);
     m_readerBar->addSeparator();
     m_readerBar->addAction(m_undoAct);
     m_readerBar->addAction(m_redoAct);
     m_readerBar->addSeparator();
     m_readerBar->addActions(m_toolGroup->actions());
-    m_readerBar->addSeparator();
     m_readerBar->addActions(m_penColorActs);
     m_readerBar->addActions(m_highlightColorActs);
     m_readerBar->addActions(m_widthActs);
     m_readerBar->addAction(m_clearPageAct);
     m_readerBar->addSeparator();
-    m_readerBar->addAction(m_mouseDrawsAct);
-    m_readerBar->addSeparator();
     m_readerBar->addAction(m_zoomOutAct);
     m_readerBar->addAction(m_fitAct);
     m_readerBar->addAction(m_zoomInAct);
-    m_readerBar->addAction(m_rotateAct);
-    m_readerBar->addAction(m_fullScreenAct);
-    m_readerBar->addSeparator();
-    m_readerBar->addAction(m_lookupAct);
-    m_readerBar->addAction(m_vocabAct);
+    auto *readerSpacer = new QWidget;
+    readerSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_readerBar->addWidget(readerSpacer);
+    m_readerBar->addAction(m_focusAct);
+}
+
+void MainWindow::buildMoreMenu()
+{
+    // "⋯": everything that isn't on the slim toolbars, including all the menus.
+    m_moreMenu = new QMenu(this);
+    m_moreMenu->addAction(m_openAct);
+    m_moreMenu->addAction(m_smartAct);
+    m_moreMenu->addAction(m_lookupAct);
+    m_moreMenu->addAction(m_vocabAct);
+    m_moreMenu->addSeparator();
+    m_moreMenu->addAction(m_focusAct);
+    m_moreMenu->addAction(m_fullScreenAct);
+    m_moreMenu->addAction(m_rotateAct);
+    m_moreMenu->addAction(m_commands.value("contents"));
+    m_moreMenu->addAction(m_mouseDrawsAct);
+    m_moreMenu->addSeparator();
+    for (QAction *menu : menuBar()->actions())
+        if (menu->menu()) m_moreMenu->addMenu(menu->menu());
+    m_moreMenu->addSeparator();
+    m_moreMenu->addAction(m_menuBarAct);
+    m_moreMenu->addAction(m_settingsAct);
+
+    for (QToolBar *bar : {m_homeBar, m_readerBar}) {
+        auto *more = new QToolButton;
+        more->setIcon(icon("more"));
+        more->setToolTip("More");
+        more->setMenu(m_moreMenu);
+        more->setPopupMode(QToolButton::InstantPopup);
+        more->setStyleSheet("QToolButton::menu-indicator { image: none; }");
+        bar->addWidget(more);
+    }
 }
 
 void MainWindow::buildMenus()
@@ -466,6 +530,7 @@ void MainWindow::buildMenus()
     QMenu *file = menuBar()->addMenu("&File");
     file->addAction(m_openAct);
     file->addAction(m_closeTabAct);
+    file->addAction(m_renameAct);
     file->addSeparator();
     file->addAction(m_syncAct);
     file->addAction(m_signAct);
@@ -485,6 +550,7 @@ void MainWindow::buildMenus()
     view->addAction(m_nextTabAct);
     view->addAction(m_prevTabAct);
     view->addSeparator();
+    view->addAction(m_smartAct);
     view->addAction(m_vocabAct);
     view->addAction(m_lookupAct);
     view->addAction(m_dictDock->toggleViewAction());
@@ -494,6 +560,8 @@ void MainWindow::buildMenus()
     view->addAction(m_fitAct);
     view->addAction(m_rotateAct);
     view->addAction(m_fullScreenAct);
+    view->addAction(m_focusAct);
+    view->addAction(m_menuBarAct);
 
     QMenu *go = menuBar()->addMenu("&Go");
     for (const char *id : {"nextPage", "prevPage", "firstPage", "lastPage", "goToPage", "", "halfPageDown", "halfPageUp",
@@ -537,7 +605,7 @@ ReaderView *MainWindow::readerFor(const QString &docKey) const
     return nullptr;
 }
 
-void MainWindow::addReaderTab(const Document &doc, int page, bool activate)
+void MainWindow::addReaderTab(const Document &doc, int page, bool activate, double offset)
 {
     auto *reader = new ReaderView(m_ctx);
     reader->setTools(m_tools);
@@ -545,7 +613,7 @@ void MainWindow::addReaderTab(const Document &doc, int page, bool activate)
     const int index = m_tabs->addTab(reader, icon("pdf"), shortTitle(doc.title));
     m_tabs->setTabToolTip(index, doc.title);
     // Open after the tab exists so the view has its real size when it scrolls to the saved spot.
-    if (!reader->open(doc, page)) {
+    if (!reader->open(doc, page, offset)) {
         m_tabs->removeTab(index);
         reader->deleteLater();
         QMessageBox::warning(this, "PenReader", "Couldn't open “" + doc.title + "”. The file may be damaged.");
@@ -597,6 +665,10 @@ void MainWindow::addReaderTab(const Document &doc, int page, bool activate)
 
 void MainWindow::closeTab(int index)
 {
+    if (m_smart && m_tabs->widget(index) == m_smart) {
+        m_tabs->removeTab(index); // kept for next time, with its last results
+        return;
+    }
     auto *reader = qobject_cast<ReaderView *>(m_tabs->widget(index));
     if (!reader)
         return; // Home stays
@@ -636,14 +708,24 @@ void MainWindow::saveSession()
         keys << r->document().docKey;
     QSettings s;
     s.setValue("session/openDocs", keys);
-    s.setValue("session/current", currentReader() ? currentReader()->document().docKey : QString());
+    s.setValue("session/current", currentReader() ? currentReader()->document().docKey
+                                  : (m_smart && m_tabs->currentWidget() == m_smart ? QString("smart") : QString()));
+    const bool smartOpen = m_smart && m_tabs->indexOf(m_smart) >= 0;
+    s.setValue("session/smartOpen", smartOpen);
+    s.setValue("session/smartQuery", smartOpen ? m_smart->query() : QString());
+    s.setValue("session/dictWord", m_dictDock->isVisible() ? m_definition->word() : QString());
+    s.setValue("session/fullscreen", isFullScreen());
+    s.setValue("session/focus", m_focus);
     m_home->setOpenDocuments(QSet<QString>(keys.begin(), keys.end()));
 }
 
 void MainWindow::restoreSession()
 {
-    if (!Prefs::restoreTabs())
+    if (!Prefs::restoreTabs()) {
+        m_restoring = false;
+        saveSession();
         return;
+    }
     QSettings s;
     QStringList keys = s.value("session/openDocs").toStringList();
     const QString legacy = s.value("session/openDoc").toString(); // single-document sessions (pre-tabs)
@@ -660,9 +742,27 @@ void MainWindow::restoreSession()
         if (const auto doc = m_ctx.docs->get(key); doc && !doc->deleted && doc->onDevice())
             addReaderTab(*doc, -1, false);
     }
-    m_restoring = false;
-    if (ReaderView *r = readerFor(current); r && !currentReader())
-        m_tabs->setCurrentWidget(r);
+    const bool openedFromCommandLine = currentReader() != nullptr;
+    const QString dictWord = s.value("session/dictWord").toString();
+    const bool fullscreen = s.value("session/fullscreen").toBool();
+    const bool smartOpen = s.value("session/smartOpen").toBool();
+    const QString smartQuery = s.value("session/smartQuery").toString();
+    if (smartOpen) {
+        showSmartSearch();
+        m_smart->setQuery(smartQuery);
+    }
+    if (!openedFromCommandLine) {
+        if (ReaderView *r = readerFor(current)) m_tabs->setCurrentWidget(r);
+        else if (current == "smart" && m_smart) m_tabs->setCurrentWidget(m_smart);
+        else m_tabs->setCurrentWidget(m_home);
+    }
+    if (currentReader() && !dictWord.isEmpty())
+        showWord(dictWord); // the dictionary panel as it was
+    if (currentReader() && fullscreen && !isFullScreen())
+        toggleFullScreen();
+    if (s.value("session/focus").toBool() && !m_focus)
+        toggleFocusMode();
+    m_restoring = false; // from now on, changes are saved
     saveSession();
 }
 
@@ -692,11 +792,11 @@ void MainWindow::openFile(const QString &path)
     }));
 }
 
-void MainWindow::openDocument(const QString &docKey, int page, bool activate)
+void MainWindow::openDocument(const QString &docKey, int page, bool activate, double offset)
 {
     if (ReaderView *open = readerFor(docKey)) {
         if (activate) m_tabs->setCurrentWidget(open);
-        if (page >= 0) open->jumpTo(page, 0);
+        if (page >= 0) open->goToPage(page, offset);
         return;
     }
     const auto doc = m_ctx.docs->get(docKey);
@@ -705,20 +805,20 @@ void MainWindow::openDocument(const QString &docKey, int page, bool activate)
         return;
     }
     if (doc->onDevice())
-        addReaderTab(*doc, page, activate);
+        addReaderTab(*doc, page, activate, offset);
     else if (doc->inCloud())
-        downloadAndOpen(*doc, page, activate);
+        downloadAndOpen(*doc, page, activate, offset);
     else
         QMessageBox::information(this, "PenReader",
                                  "This PDF was opened on another device and hasn't finished uploading yet. "
                                  "Try again after that device syncs.");
 }
 
-void MainWindow::downloadAndOpen(const Document &doc, int page, bool activate)
+void MainWindow::downloadAndOpen(const Document &doc, int page, bool activate, double offset)
 {
     statusBar()->showMessage("Downloading “" + doc.title + "” from your cloud library…");
     auto *watcher = new QFutureWatcher<OpenResult>(this);
-    connect(watcher, &QFutureWatcher<OpenResult>::finished, this, [this, watcher, page, activate] {
+    connect(watcher, &QFutureWatcher<OpenResult>::finished, this, [this, watcher, page, activate, offset] {
         watcher->deleteLater();
         statusBar()->clearMessage();
         const OpenResult r = watcher->result();
@@ -728,7 +828,7 @@ void MainWindow::downloadAndOpen(const Document &doc, int page, bool activate)
         } else if (!r.error.isEmpty()) {
             QMessageBox::warning(this, "Download failed", r.error);
         } else {
-            openDocument(r.docKey, page, activate);
+            openDocument(r.docKey, page, activate, offset);
         }
     });
     AppContext *ctx = &m_ctx;
@@ -811,18 +911,74 @@ void MainWindow::toggleFullScreen()
         m_dockWasVisible = m_dictDock->isVisible();
         m_dictDock->hide();
         showFullScreen();
-        statusBar()->showMessage("Press Esc or F11 to leave full screen", 3000);
-        QTimer::singleShot(3000, this, [this] { if (isFullScreen()) statusBar()->hide(); });
     } else {
         showNormal();
-        statusBar()->show();
         if (m_dockWasVisible) m_dictDock->show();
     }
-    menuBar()->setVisible(!enter);
-    m_tabs->tabBar()->setVisible(!enter);
-    m_readerBar->setVisible(!enter && currentReader());
-    m_homeBar->setVisible(!enter && !currentReader());
     m_fullScreenAct->setText(enter ? "Leave full screen" : "Full screen");
+    applyChrome();
+}
+
+void MainWindow::toggleFocusMode()
+{
+    m_focus = !m_focus;
+    if (m_focus) {
+        m_focusDictWasVisible = m_dictDock->isVisible();
+        m_focusContentsWasVisible = m_contentsDock->isVisible();
+        m_dictDock->hide();
+        m_contentsDock->hide();
+        m_findBar->hide();
+    } else {
+        if (m_focusDictWasVisible && currentReader()) m_dictDock->show();
+        if (m_focusContentsWasVisible && currentReader()) m_contentsDock->show();
+    }
+    m_focusAct->setChecked(m_focus);
+    applyChrome();
+    if (ReaderView *r = currentReader()) r->setFocus();
+    if (!m_restoring) saveSession();
+}
+
+void MainWindow::applyChrome()
+{
+    const bool bare = isFullScreen() || m_focus;
+    const bool reading = currentReader() && currentReader()->isOpen();
+    menuBar()->setVisible(!bare && m_menuBarAct && m_menuBarAct->isChecked());
+    m_tabs->tabBar()->setVisible(!bare);
+    m_readerBar->setVisible(!bare && reading);
+    m_homeBar->setVisible(!bare && !reading);
+    statusBar()->setVisible(!bare);
+    if (!m_showBars) {
+        // Faint button in the corner to bring everything back (F8 / F11 / Esc do the same).
+        m_showBars = new QToolButton(m_tabs);
+        m_showBars->setIcon(icon("show-bars"));
+        m_showBars->setIconSize(QSize(18, 18));
+        m_showBars->setToolTip("Show toolbars (F8 or Esc)");
+        m_showBars->setCursor(Qt::PointingHandCursor);
+        m_showBars->setStyleSheet("QToolButton { background: rgba(55, 71, 79, 70); border: none; border-radius: 15px; padding: 6px; }"
+                                  "QToolButton:hover { background: rgba(55, 71, 79, 230); }");
+        connect(m_showBars, &QToolButton::clicked, this, [this] {
+            if (isFullScreen()) toggleFullScreen();
+            if (m_focus) toggleFocusMode();
+        });
+        m_tabs->installEventFilter(this);
+    }
+    m_showBars->setVisible(bare);
+    if (bare) positionShowBarsButton();
+}
+
+void MainWindow::positionShowBarsButton()
+{
+    if (!m_showBars) return;
+    m_showBars->adjustSize();
+    m_showBars->move(m_tabs->width() - m_showBars->width() - 26, 8); // clear of the scroll bar
+    m_showBars->raise();
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_tabs && event->type() == QEvent::Resize && m_showBars && m_showBars->isVisible())
+        positionShowBarsButton();
+    return QMainWindow::eventFilter(watched, event);
 }
 
 // ---------------------------------------------------------------- Google sign-in & sync
@@ -929,10 +1085,7 @@ void MainWindow::updateReaderActions()
 {
     ReaderView *r = currentReader();
     const bool reading = r && r->isOpen();
-    if (!isFullScreen()) {
-        m_readerBar->setVisible(reading);
-        m_homeBar->setVisible(!reading);
-    }
+    applyChrome();
     // Disabled on Home so plain keys like j / k reach the Home lists instead.
     for (QAction *a : std::as_const(m_readerOnly))
         a->setEnabled(reading);
@@ -958,6 +1111,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     for (ReaderView *r : readers())
         r->flushProgress();
+    saveSession(); // tabs, active tab, Smart search, dictionary, full screen — as they are right now
     QSettings settings;
     settings.setValue("window/geometry", saveGeometry());
     settings.setValue("window/state", saveState());
@@ -1001,6 +1155,16 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::applySettings()
 {
+    // Appearance: window theme, icons tinted for it, and page colours in every open PDF.
+    Theme::apply();
+    for (QAction *a : std::as_const(m_commands))
+        if (const QString name = a->property("themeIcon").toString(); !name.isEmpty()) a->setIcon(icon(name));
+    for (QToolButton *b : findChildren<QToolButton *>())
+        if (b->menu() == m_moreMenu && m_moreMenu) b->setIcon(icon("more"));
+    m_tabs->setTabIcon(m_tabs->indexOf(m_home), icon("home"));
+    for (int i = 0; i < m_widthActs.size(); ++i) m_widthActs[i]->setIcon(widthIcon(i));
+    for (ReaderView *r : readers()) r->refreshColors();
+
     const auto keys = Commands::effectiveKeys();
     for (auto it = m_commands.begin(); it != m_commands.end(); ++it) {
         QAction *a = it.value();
@@ -1048,6 +1212,8 @@ void MainWindow::onEscape()
         closeFindBar();
     } else if (isFullScreen()) {
         toggleFullScreen();
+    } else if (m_focus) {
+        toggleFocusMode();
     } else if (ReaderView *r = currentReader()) {
         r->clearSearch();
         r->clearHighlight();
@@ -1130,7 +1296,48 @@ void MainWindow::showShortcutHelp()
 
 void MainWindow::showSettings()
 {
-    SettingsDialog dlg(this);
+    SettingsDialog dlg(m_ctx, this);
     connect(&dlg, &SettingsDialog::applied, this, &MainWindow::applySettings);
     dlg.exec();
+}
+
+void MainWindow::showSmartSearch()
+{
+    if (!m_smart) {
+        m_smart = new SmartSearchView(m_ctx, this);
+        connect(m_smart, &SmartSearchView::openRequested, this, [this](const QString &key, int page, double pos) {
+            openDocument(key, page, true, qMax(0.0, pos - 0.03)); // a little above the passage
+        });
+    }
+    if (m_tabs->indexOf(m_smart) < 0) {
+        const int index = m_tabs->insertTab(1, m_smart, icon("sparkle"), "Smart search");
+        m_tabs->setTabToolTip(index, "Ask questions across all your PDFs");
+    }
+    m_tabs->setCurrentWidget(m_smart);
+    m_smart->focusQuery();
+}
+
+void MainWindow::renamePdf()
+{
+    const QString key = currentReader() ? currentReader()->document().docKey
+                                        : (m_tabs->currentWidget() == m_home ? m_home->selectedDocument() : QString());
+    if (key.isEmpty()) {
+        statusBar()->showMessage("Open a PDF or select one on Home to rename it", 4000);
+        return;
+    }
+    m_home->renameDocument(key);
+}
+
+void MainWindow::refreshTabTitles()
+{
+    // Renames made here or synced from another device show up in open tabs right away.
+    for (ReaderView *r : readers()) {
+        const auto doc = m_ctx.docs->get(r->document().docKey);
+        if (!doc || doc->title == r->document().title) continue;
+        r->setDocumentTitle(doc->title);
+        const int i = m_tabs->indexOf(r);
+        m_tabs->setTabText(i, shortTitle(doc->title));
+        m_tabs->setTabToolTip(i, doc->title);
+        if (r == currentReader()) setWindowTitle(doc->title + " — PenReader");
+    }
 }

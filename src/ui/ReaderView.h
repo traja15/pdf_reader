@@ -40,10 +40,14 @@ public:
     ~ReaderView() override;
 
     /// Opens a document that is on this device. [initialPage] >= 0 overrides the saved position.
-    bool open(const Document &doc, int initialPage = -1);
+    bool open(const Document &doc, int initialPage = -1, double initialOffset = 0);
     void close();
     bool isOpen() const { return m_pdf != nullptr; }
     const Document &document() const { return m_doc; }
+    /// Re-renders pages in the current page colours (after Settings → Appearance).
+    void refreshColors();
+    /// After a rename (here or synced from another device).
+    void setDocumentTitle(const QString &title) { m_doc.title = title; }
 
     ToolSettings tools() const { return m_tools; }
     void setTools(const ToolSettings &t);
@@ -59,6 +63,7 @@ public:
     void fitWidth();
     void rotateClockwise();
     int rotation() const { return m_rotation; }
+    qreal zoom() const { return m_zoom; }
     void setRotation(int degrees);
 
     int currentPage() const { return m_position.page; }

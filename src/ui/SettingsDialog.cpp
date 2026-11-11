@@ -1,12 +1,21 @@
 #include "ui/SettingsDialog.h"
 
+#include "core/AppContext.h"
+#include "core/SearchIndex.h"
+#include "net/Ollama.h"
 #include "ui/Commands.h"
 #include "ui/Prefs.h"
+#include "ui/Theme.h"
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFutureWatcher>
+#include <QProgressDialog>
+#include <QTimer>
+#include <QtConcurrent>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeySequenceEdit>
@@ -26,16 +35,18 @@ constexpr int kIdRole = Qt::UserRole;
 constexpr int kMaxKeys = 3;
 }
 
-SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
+SettingsDialog::SettingsDialog(AppContext &ctx, QWidget *parent) : QDialog(parent), m_ctx(ctx)
 {
     setWindowTitle("Settings — PenReader");
     resize(760, 600);
 
     auto *tabs = new QTabWidget;
+    tabs->addTab(buildAppearancePage(), "Appearance");
     tabs->addTab(buildKeyboardPage(), "Keyboard");
     tabs->addTab(buildReadingPage(), "Reading");
     tabs->addTab(buildDictionaryPage(), "Dictionary");
     tabs->addTab(buildSyncPage(), "Sync");
+    tabs->addTab(buildSmartSearchPage(), "Smart search");
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Apply);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] { apply(); accept(); });
@@ -141,6 +152,198 @@ QWidget *SettingsDialog::buildSyncPage()
     form->addRow("", new QLabel("<span style='color:gray'>PenReader also syncs when it starts, after you open a PDF "
                                 "or save a word, and when you close a tab.</span>"));
     return page;
+}
+
+QWidget *SettingsDialog::buildAppearancePage()
+{
+    auto *page = new QWidget;
+    m_theme = new QComboBox;
+    m_theme->addItem("Dark", "dark");
+    m_theme->addItem("Light", "light");
+    m_theme->addItem("Follow the system", "system");
+    m_theme->setCurrentIndex(int(Theme::mode() == Theme::Mode::Light ? 1 : Theme::mode() == Theme::Mode::System ? 2 : 0));
+
+    m_pageMode = new QComboBox;
+    m_pageMode->addItem("Dark — light text on a dark page", "dark");
+    m_pageMode->addItem("Sepia — warm paper", "sepia");
+    m_pageMode->addItem("Original — the PDF's own colours", "original");
+    m_pageMode->addItem("Custom — choose text and background colours", "custom");
+    m_pageMode->setCurrentIndex(qMax(0, m_pageMode->findData(Theme::pageMode())));
+
+    const Theme::PageColors custom = Theme::colorsFor("custom");
+    m_customText = custom.text;
+    m_customBack = custom.background;
+    m_textColorButton = new QPushButton("Text colour…");
+    m_backColorButton = new QPushButton("Background colour…");
+    connect(m_textColorButton, &QPushButton::clicked, this, [this] {
+        const QColor c = QColorDialog::getColor(m_customText, this, "Text (front) colour");
+        if (c.isValid()) { m_customText = c; updateAppearancePreview(); }
+    });
+    connect(m_backColorButton, &QPushButton::clicked, this, [this] {
+        const QColor c = QColorDialog::getColor(m_customBack, this, "Background (back) colour");
+        if (c.isValid()) { m_customBack = c; updateAppearancePreview(); }
+    });
+    auto *colors = new QHBoxLayout;
+    colors->addWidget(m_textColorButton);
+    colors->addWidget(m_backColorButton);
+    colors->addStretch();
+
+    m_preview = new QLabel;
+    m_preview->setWordWrap(true);
+    m_preview->setMinimumHeight(110);
+    m_preview->setMargin(14);
+    connect(m_pageMode, &QComboBox::currentIndexChanged, this, &SettingsDialog::updateAppearancePreview);
+
+    auto *form = new QFormLayout(page);
+    form->addRow("App theme:", m_theme);
+    form->addRow("Reading colours:", m_pageMode);
+    form->addRow("", colors);
+    form->addRow("Preview:", m_preview);
+    form->addRow("", new QLabel("<span style='color:gray'>Reading colours change how PDF pages look. Your handwriting "
+                                "stays readable: on dark pages, dark ink is shown lighter, keeping its colour.</span>"));
+    qobject_cast<QLabel *>(form->itemAt(form->rowCount() - 1, QFormLayout::FieldRole)->widget())->setWordWrap(true);
+    updateAppearancePreview();
+    return page;
+}
+
+void SettingsDialog::updateAppearancePreview()
+{
+    const QString mode = m_pageMode->currentData().toString();
+    const bool custom = mode == "custom";
+    m_textColorButton->setEnabled(custom);
+    m_backColorButton->setEnabled(custom);
+    auto swatch = [](const QColor &c) {
+        QPixmap pm(16, 16);
+        pm.fill(c);
+        return QIcon(pm);
+    };
+    m_textColorButton->setIcon(swatch(m_customText));
+    m_backColorButton->setIcon(swatch(m_customBack));
+    const Theme::PageColors c = custom ? Theme::PageColors{false, m_customText, m_customBack} : Theme::colorsFor(mode);
+    m_preview->setStyleSheet(QStringLiteral("QLabel { color: %1; background: %2; border: 1px solid palette(mid); "
+                                            "font-family: serif; font-size: 13pt; }")
+                                 .arg(c.text.name(), c.background.name()));
+    m_preview->setText("<b>Chapter 1</b><br>The quick brown fox jumps over the lazy dog. "
+                       "This is how your PDF pages will look.");
+}
+
+QWidget *SettingsDialog::buildSmartSearchPage()
+{
+    auto *page = new QWidget;
+    m_aiUrl = new QLineEdit(AiPrefs::url());
+    m_embedModel = new QComboBox;
+    m_embedModel->setEditable(true);
+    m_embedModel->addItems({"nomic-embed-text", "mxbai-embed-large", "bge-m3", "all-minilm"});
+    m_embedModel->setCurrentText(AiPrefs::embeddingModel());
+    m_embedModel->setToolTip("Turns passages into meaning vectors. Changing it re-processes every passage.");
+    m_answerModel = new QComboBox;
+    m_answerModel->setEditable(true);
+    m_answerModel->addItems({"qwen2.5:3b", "qwen2.5:1.5b", "llama3.2:3b", "gemma3:4b", "qwen2.5:7b"});
+    m_answerModel->setCurrentText(AiPrefs::answerModel());
+    m_answerModel->setToolTip("Writes answers from the best passages. Smaller = faster, larger = better answers.");
+    m_autoIndex = new QCheckBox("Index new PDFs automatically in the background");
+    m_autoIndex->setChecked(AiPrefs::autoIndex());
+    m_aiStatus = new QLabel;
+    m_aiStatus->setWordWrap(true);
+
+    auto *check = new QPushButton("Check Ollama");
+    connect(check, &QPushButton::clicked, this, &SettingsDialog::checkOllama);
+    auto *download = new QPushButton("Download models");
+    connect(download, &QPushButton::clicked, this, &SettingsDialog::downloadModels);
+    auto *rebuild = new QPushButton("Rebuild index");
+    rebuild->setToolTip("Re-read every PDF from scratch");
+    connect(rebuild, &QPushButton::clicked, this, [this] {
+        if (QMessageBox::question(this, "Rebuild index", "Re-read and re-process every PDF? This can take a while "
+                                                          "for a big library.") != QMessageBox::Yes)
+            return;
+        m_ctx.indexer->stop();
+        QTimer::singleShot(500, this, [this] {
+            m_ctx.search->clear();
+            m_ctx.indexer->start();
+            m_aiStatus->setText("Rebuilding the index in the background…");
+        });
+    });
+    auto *buttons = new QHBoxLayout;
+    buttons->addWidget(check);
+    buttons->addWidget(download);
+    buttons->addWidget(rebuild);
+    buttons->addStretch();
+
+    auto *form = new QFormLayout(page);
+    form->addRow(new QLabel("Smart search runs open-source AI models on this computer with "
+                            "<a href='https://ollama.com'>Ollama</a> — your PDFs never leave it. "
+                            "Keyword search works even without Ollama."));
+    qobject_cast<QLabel *>(form->itemAt(0)->widget())->setOpenExternalLinks(true);
+    qobject_cast<QLabel *>(form->itemAt(0)->widget())->setWordWrap(true);
+    form->addRow("Ollama address:", m_aiUrl);
+    form->addRow("Embedding model:", m_embedModel);
+    form->addRow("Answer model:", m_answerModel);
+    form->addRow("", m_autoIndex);
+    form->addRow("", buttons);
+    form->addRow("", m_aiStatus);
+    form->addRow("", new QLabel("<span style='color:gray'>Status: " + m_ctx.indexer->status().toHtmlEscaped() + "</span>"));
+    QTimer::singleShot(0, this, &SettingsDialog::checkOllama);
+    return page;
+}
+
+void SettingsDialog::checkOllama()
+{
+    QSettings().setValue("ai/url", m_aiUrl->text().trimmed()); // so the check uses what's typed
+    m_aiStatus->setText("Checking…");
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        m_aiStatus->setText(watcher->result());
+    });
+    const QString embed = m_embedModel->currentText().trimmed(), answer = m_answerModel->currentText().trimmed();
+    watcher->setFuture(QtConcurrent::run([embed, answer]() -> QString {
+        try {
+            const QStringList models = Ollama::installedModels();
+            auto has = [&](const QString &m) { return models.contains(m) || models.contains(m + ":latest"); };
+            QString s = "✅ Ollama is running. Installed: " + models.join(", ") + "<br>";
+            s += (has(embed) ? "✅ " : "⬇️ Not downloaded yet: ") + embed + "<br>";
+            s += (has(answer) ? "✅ " : "⬇️ Not downloaded yet: ") + answer;
+            return s;
+        } catch (const std::exception &e) {
+            return QString("❌ Can't reach Ollama. Install it from ollama.com and start it (“ollama serve”).<br>"
+                           "<span style='color:gray'>") + QString::fromStdString(e.what()).toHtmlEscaped() + "</span>";
+        }
+    }));
+}
+
+void SettingsDialog::downloadModels()
+{
+    QSettings().setValue("ai/url", m_aiUrl->text().trimmed());
+    const QStringList models = {m_embedModel->currentText().trimmed(), m_answerModel->currentText().trimmed()};
+    auto *progress = new QProgressDialog("Downloading models…", "Hide", 0, 1000, this);
+    progress->setWindowTitle("Smart search models");
+    progress->setMinimumDuration(0);
+    progress->setValue(0);
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, progress] {
+        watcher->deleteLater();
+        progress->close();
+        progress->deleteLater();
+        const QString error = watcher->result();
+        if (!error.isEmpty()) QMessageBox::warning(this, "Download models", error);
+        checkOllama();
+        m_ctx.indexer->start();
+    });
+    watcher->setFuture(QtConcurrent::run([models, progress]() -> QString {
+        try {
+            for (const QString &m : models) {
+                Ollama::pull(m, [&](const QString &status, double fraction) {
+                    QMetaObject::invokeMethod(progress, [progress, m, status, fraction] {
+                        progress->setLabelText(QStringLiteral("%1: %2").arg(m, status));
+                        if (fraction >= 0) progress->setValue(int(fraction * 1000));
+                    });
+                });
+            }
+            return {};
+        } catch (const std::exception &e) {
+            return QString::fromStdString(e.what());
+        }
+    }));
 }
 
 // ---------------------------------------------------------------- keyboard
@@ -276,6 +479,16 @@ void SettingsDialog::apply()
     s.setValue("ui/dictTab", m_dictTab->currentIndex());
     s.setValue("sync/intervalMinutes", m_syncInterval->value());
     s.setValue("sync/onClose", m_syncOnClose->isChecked());
+    const QString theme = m_theme->currentData().toString();
+    Theme::setMode(theme == "light" ? Theme::Mode::Light : theme == "system" ? Theme::Mode::System : Theme::Mode::Dark);
+    Theme::setCustomPageColors(m_customText, m_customBack);
+    Theme::setPageMode(m_pageMode->currentData().toString());
+    const bool embedChanged = m_embedModel->currentText().trimmed() != AiPrefs::embeddingModel();
+    s.setValue("ai/url", m_aiUrl->text().trimmed());
+    s.setValue("ai/embeddingModel", m_embedModel->currentText().trimmed());
+    s.setValue("ai/answerModel", m_answerModel->currentText().trimmed());
+    s.setValue("ai/autoIndex", m_autoIndex->isChecked());
+    if (embedChanged) m_ctx.indexer->start(); // re-embed passages with the new model
 
     Commands::setVimEnabled(m_vim->isChecked());
     if (m_resetAll)

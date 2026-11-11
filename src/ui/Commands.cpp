@@ -38,6 +38,7 @@ QList<Command> buildCommands()
         {"findNext", "Search & links", "Next match", {K(Qt::Key_F3)}, {K("N")}},
         {"findPrev", "Search & links", "Previous match", {K("Shift+F3")}, {K("Shift+N")}},
         {"followLink", "Search & links", "Follow a link (shows letter hints)", {K("Ctrl+Shift+F")}, {K("F")}},
+        {"smartSearch", "Search & links", "Smart search (ask your PDFs)", {K("Ctrl+K")}, {}},
         {"lookupWord", "Search & links", "Look up a word in the dictionary…", {K("Ctrl+L")}, {}},
         {"dictionaryPanel", "Search & links", "Show/hide dictionary panel", {K("Ctrl+Shift+D")}, {}},
 
@@ -47,6 +48,7 @@ QList<Command> buildCommands()
         {"fitWidth", "View", "Fit width", {K("Ctrl+0")}, {K("="), K("S")}},
         {"rotate", "View", "Rotate 90°", {K("Ctrl+R")}, {K("R")}},
         {"fullScreen", "View", "Full screen", {K(Qt::Key_F11)}, {}},
+        {"focusMode", "View", "Focus mode (hide everything but the PDF)", {K(Qt::Key_F8)}, {}},
 
         // Editing & tools
         {"undo", "Editing & tools", "Undo", {K(QKeySequence::Undo)}, {K("U")}},
@@ -64,6 +66,16 @@ QList<Command> buildCommands()
         {"nextTab", "Tabs & app", "Next tab", {K("Ctrl+Tab"), K("Ctrl+PgDown")}, {K("G, T")}},
         {"prevTab", "Tabs & app", "Previous tab", {K("Ctrl+Shift+Tab"), K("Ctrl+PgUp")}, {K("G, Shift+T")}},
         {"closeTab", "Tabs & app", "Close tab", {K(QKeySequence::Close)}, {}},
+        {"tab1", "Tabs & app", "Go to tab 1 (Home)", {K("Alt+1")}, {}},
+        {"tab2", "Tabs & app", "Go to tab 2", {K("Alt+2")}, {}},
+        {"tab3", "Tabs & app", "Go to tab 3", {K("Alt+3")}, {}},
+        {"tab4", "Tabs & app", "Go to tab 4", {K("Alt+4")}, {}},
+        {"tab5", "Tabs & app", "Go to tab 5", {K("Alt+5")}, {}},
+        {"tab6", "Tabs & app", "Go to tab 6", {K("Alt+6")}, {}},
+        {"tab7", "Tabs & app", "Go to tab 7", {K("Alt+7")}, {}},
+        {"tab8", "Tabs & app", "Go to tab 8", {K("Alt+8")}, {}},
+        {"tab9", "Tabs & app", "Go to the last tab", {K("Alt+9")}, {}},
+        {"renamePdf", "Tabs & app", "Rename PDF…", {K(Qt::Key_F2)}, {}},
         {"myWords", "Tabs & app", "My Words", {K("Ctrl+M")}, {}},
         {"sync", "Tabs & app", "Sync now", {K(Qt::Key_F5)}, {}},
         {"settings", "Tabs & app", "Settings…", {K("Ctrl+,")}, {}},

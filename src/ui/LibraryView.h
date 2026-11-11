@@ -12,6 +12,7 @@ class QListWidget;
 class QMenu;
 class QPushButton;
 class QTreeWidget;
+class Thumbnails;
 
 /// The Home tab: the PDF catalogue (folder tree + the selected folder's contents, synced across
 /// devices), recently learnt words, and the sign-in banner.
@@ -24,6 +25,10 @@ public:
     void setOpenDocuments(const QSet<QString> &docKeys);
     /// The folder being browsed (empty for All PDFs / Unfiled): new PDFs are filed here.
     QString currentFolderId() const;
+    /// The single selected PDF in the list, if any.
+    QString selectedDocument() const;
+    /// Asks for a new name for a PDF.
+    void renameDocument(const QString &docKey);
 
 signals:
     void openRequested(const QString &docKey);
@@ -49,6 +54,7 @@ private:
     QStringList selectedDocKeys() const;
 
     AppContext &m_ctx;
+    Thumbnails *m_thumbs;
     QFrame *m_banner;
     QTreeWidget *m_folders;
     QLabel *m_crumb;

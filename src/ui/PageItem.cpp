@@ -1,5 +1,7 @@
 #include "ui/PageItem.h"
 
+#include "ui/Theme.h"
+
 #include <QPainter>
 #include <QPainterPath>
 #include <QStyleOptionGraphicsItem>
@@ -22,7 +24,7 @@ void PageItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, 
 {
     const QRectF rect = boundingRect();
     painter->fillRect(rect.translated(4, 4), QColor(0, 0, 0, 40)); // drop shadow
-    painter->fillRect(rect, Qt::white);
+    painter->fillRect(rect, Theme::pageColors().background); // shown until the page bitmap arrives
 
     // How many device pixels one scene unit covers right now -> the bitmap width we want.
     const qreal lod = option->levelOfDetailFromTransform(painter->worldTransform());
@@ -58,7 +60,7 @@ void PageItem::drawStroke(QPainter *p, const Stroke &s)
     const int n = s.pointCount();
     if (n == 0)
         return;
-    const QColor color = QColor::fromRgba(s.color);
+    const QColor color = Theme::inkColor(QColor::fromRgba(s.color), s.tool == InkTool::Highlighter); // readable on dark pages
     if (s.tool == InkTool::Highlighter) {
         QPainterPath path(QPointF(s.x(0), s.y(0)));
         for (int i = 1; i < n; ++i)

@@ -16,12 +16,14 @@ qt_add_library(penreader_core STATIC
     src/core/VocabStore.h src/core/VocabStore.cpp
     src/core/AppContext.h src/core/AppContext.cpp
     src/core/OpenUrl.h src/core/OpenUrl.cpp
+    src/core/SearchIndex.h src/core/SearchIndex.cpp
     src/net/Http.h src/net/Http.cpp
     src/net/Dictionary.h src/net/Dictionary.cpp
     src/net/TamilDictionary.h src/net/TamilDictionary.cpp
     src/net/GoogleAuth.h src/net/GoogleAuth.cpp
     src/net/DriveApi.h src/net/DriveApi.cpp
     src/net/SyncManager.h src/net/SyncManager.cpp
+    src/net/Ollama.h src/net/Ollama.cpp
     src/ui/MainWindow.h src/ui/MainWindow.cpp
     src/ui/LibraryView.h src/ui/LibraryView.cpp
     src/ui/ReaderView.h src/ui/ReaderView.cpp
@@ -30,6 +32,9 @@ qt_add_library(penreader_core STATIC
     src/ui/Prefs.h
     src/ui/Commands.h src/ui/Commands.cpp
     src/ui/SettingsDialog.h src/ui/SettingsDialog.cpp
+    src/ui/SmartSearchView.h src/ui/SmartSearchView.cpp
+    src/ui/Thumbnails.h src/ui/Thumbnails.cpp
+    src/ui/Theme.h src/ui/Theme.cpp
     src/ui/DefinitionPanel.h src/ui/DefinitionPanel.cpp
     src/ui/VocabWindow.h src/ui/VocabWindow.cpp
 )
@@ -42,7 +47,7 @@ set(EN_TA_INDEX ${CMAKE_CURRENT_SOURCE_DIR}/../app/src/main/assets/en_ta.tsv)
 set_source_files_properties(${EN_TA_INDEX} PROPERTIES QT_RESOURCE_ALIAS en_ta.tsv)
 qt_add_resources(penreader_core "data" PREFIX "/data" FILES ${EN_TA_INDEX})
 
-file(GLOB ICONS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} resources/icons/*.svg)
+file(GLOB ICONS CONFIGURE_DEPENDS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} resources/icons/*.svg)
 qt_add_resources(penreader_core "icons" PREFIX "/" FILES ${ICONS})
 
 qt_add_executable(penreader WIN32 src/main.cpp)
@@ -59,6 +64,8 @@ if(PENREADER_SELFTEST)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     qt_add_executable(penreader_selftest tests/selftest.cpp)
     target_link_libraries(penreader_selftest PRIVATE penreader_core Qt6::Test)
+    qt_add_executable(penreader_screenshot tests/screenshot.cpp)
+    target_link_libraries(penreader_screenshot PRIVATE penreader_core Qt6::Test)
 endif()
 
 install(TARGETS penreader RUNTIME DESTINATION bin)
