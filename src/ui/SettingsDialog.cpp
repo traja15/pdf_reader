@@ -10,6 +10,8 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include "ui/MouseScheme.h"
+#include <QGroupBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFutureWatcher>
@@ -117,6 +119,72 @@ QWidget *SettingsDialog::buildReadingPage()
     m_restoreTabs->setChecked(Prefs::restoreTabs());
 
     auto *form = new QFormLayout(page);
+    // ---- Mouse: every button's job is a choice (applies immediately after OK / Apply).
+    const MouseScheme ms = MouseScheme::load();
+    auto combo = [](const QList<std::pair<QString, QString>> &items, const QString &current) {
+        auto *c = new QComboBox;
+        for (const auto &[label, value] : items) c->addItem(label, value);
+        c->setCurrentIndex(qMax(0, c->findData(current)));
+        return c;
+    };
+    const QString leftNow = ms.leftOnText == "select" && ms.leftElsewhere == "pan" ? "smart"
+                          : ms.leftOnText == "select" ? "select" : "pan";
+    m_leftDrag = combo({{"Selects text", "select"},
+                        {"Moves the page", "pan"},
+                        {"Selects text (on text) · moves the page (anywhere else)", "smart"}}, leftNow);
+    m_right = combo({{"Moves the page (a right click still opens the menu)", "menuPan"},
+                     {"Selects text (a right click still opens the menu)", "menuSelect"},
+                     {"Nothing — a right click opens the menu", "menu"}}, ms.right);
+    m_leftHold = new QCheckBox("Holding the left button still starts selecting text from there");
+    m_leftHold->setChecked(ms.leftHold == "select");
+    m_middle = combo({{"Moves the page", "pan"}, {"Nothing", "none"}}, ms.middle);
+    m_doubleClick = combo({{"Defines the word", "define"}, {"Nothing", "none"}}, ms.doubleClick);
+    m_holdMs = new QSpinBox;
+    m_holdMs->setRange(150, 2000);
+    m_holdMs->setSingleStep(50);
+    m_holdMs->setSuffix(" ms");
+    m_holdMs->setValue(ms.holdMs);
+    // A plain-words summary of the choices, kept up to date.
+    auto *summary = new QLabel;
+    summary->setWordWrap(true);
+    auto updateSummary = [this, summary] {
+        const QString left = m_leftDrag->currentData().toString(), right = m_right->currentData().toString();
+        QString text = "<b>Left drag:</b> " + QString(left == "smart" ? "on text it selects the text; anywhere else it moves the page"
+                                                      : left == "select" ? "selects text" : "moves the page");
+        text += "<br><b>Right drag:</b> " + QString(right == "menuPan" ? "moves the page" : right == "menuSelect" ? "selects text" : "nothing");
+        text += "<br><b>Right click:</b> opens the menu (highlight, translate, copy, define…)";
+        summary->setText(text);
+    };
+    connect(m_leftDrag, &QComboBox::currentIndexChanged, this, updateSummary);
+    connect(m_right, &QComboBox::currentIndexChanged, this, updateSummary);
+    updateSummary();
+    auto *mouseDefaults = new QPushButton("Restore mouse defaults");
+    connect(mouseDefaults, &QPushButton::clicked, this, [this] {
+        const MouseScheme d;
+        m_leftDrag->setCurrentIndex(m_leftDrag->findData("select"));
+        m_right->setCurrentIndex(m_right->findData(d.right));
+        m_leftHold->setChecked(d.leftHold == "select");
+        m_middle->setCurrentIndex(m_middle->findData(d.middle));
+        m_doubleClick->setCurrentIndex(m_doubleClick->findData(d.doubleClick));
+        m_holdMs->setValue(d.holdMs);
+    });
+    auto *mouseBox = new QGroupBox("Mouse (with the mouse pointer tool)");
+    auto *mouseForm = new QFormLayout(mouseBox);
+    mouseForm->addRow("Left drag:", m_leftDrag);
+    mouseForm->addRow("Right drag:", m_right);
+    mouseForm->addRow("", summary);
+    mouseForm->addRow("", m_leftHold);
+    mouseForm->addRow("Hold time:", m_holdMs);
+    mouseForm->addRow("Middle drag:", m_middle);
+    mouseForm->addRow("Double-click a word:", m_doubleClick);
+    auto *mouseHelp = new QLabel("<span style='color:gray'>The cursor is the normal arrow; it becomes a hand only "
+                                 "while the page is being dragged and a text cursor while you select. With the pen, "
+                                 "highlighter or eraser the left button writes; the right and middle buttons work "
+                                 "as set here. Esc, or clicking the pen again, brings back the mouse pointer.</span>");
+    mouseHelp->setWordWrap(true);
+    mouseForm->addRow("", mouseHelp);
+    mouseForm->addRow("", mouseDefaults);
+    form->addRow(mouseBox);
     form->addRow("Scroll step (j / k / arrows):", m_scrollStep);
     form->addRow("Link hint letters (f):", m_hintChars);
     form->addRow("", m_restoreTabs);
@@ -376,8 +444,8 @@ void SettingsDialog::refreshKeys()
     const auto resolved = resolvedKeys();
     QHash<QKeySequence, QStringList> users;
     for (const Command &c : Commands::all())
-        if (overrideFor(c.id))
-            for (const QKeySequence &k : *overrideFor(c.id)) users[k] << c.name;
+        if (const auto own = overrideFor(c.id)) // keep the list alive while looping over it
+            for (const QKeySequence &k : *own) users[k] << c.name;
     for (const Command &c : Commands::all())
         if (!overrideFor(c.id))
             for (const QKeySequence &k : resolved.value(c.id))
@@ -476,6 +544,16 @@ void SettingsDialog::apply()
     s.setValue("reading/scrollStep", m_scrollStep->value());
     s.setValue("reading/hintChars", m_hintChars->text().trimmed().isEmpty() ? QString("asdfghjkl") : m_hintChars->text().trimmed());
     s.setValue("reading/restoreTabs", m_restoreTabs->isChecked());
+    MouseScheme mouse;
+    const QString left = m_leftDrag->currentData().toString();
+    mouse.leftOnText = left == "pan" ? "pan" : "select";
+    mouse.leftElsewhere = left == "smart" ? "pan" : left;
+    mouse.leftHold = m_leftHold->isChecked() ? "select" : "none";
+    mouse.right = m_right->currentData().toString();
+    mouse.middle = m_middle->currentData().toString();
+    mouse.doubleClick = m_doubleClick->currentData().toString();
+    mouse.holdMs = m_holdMs->value();
+    mouse.save();
     s.setValue("ui/dictTab", m_dictTab->currentIndex());
     s.setValue("sync/intervalMinutes", m_syncInterval->value());
     s.setValue("sync/onClose", m_syncOnClose->isChecked());

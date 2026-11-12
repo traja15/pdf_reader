@@ -52,6 +52,9 @@ private:
     QSpinBox *m_scrollStep;
     QLineEdit *m_hintChars;
     QCheckBox *m_restoreTabs;
+    QComboBox *m_leftDrag, *m_right, *m_middle, *m_doubleClick;
+    QCheckBox *m_leftHold;
+    QSpinBox *m_holdMs;
     QComboBox *m_dictTab;
     QSpinBox *m_syncInterval;
     QCheckBox *m_syncOnClose;

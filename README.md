@@ -5,7 +5,9 @@ A C++/Qt 6 version of the PenReader Android app. It syncs with the Android app t
 ## Features
 
 - **Tabs:** every PDF opens in its own tab. **Home** is always the first tab. Opening a PDF that's already open switches to its tab. Your open tabs come back when you restart. Shortcuts: Ctrl+Tab / Ctrl+Shift+Tab switch, Ctrl+W closes, Alt+Home goes Home.
-- **Thumbnail grid (on Home):** each PDF is a square tile showing the page you're on, with its name and progress underneath. All PDFs are listed most recently opened first.
+- **Home:** a **Library** header with a summary (PDFs · folders · words learnt), then three rounded cards (**Folders**, the PDF grid, **Recently learnt**), each with a header, a count and a dividing line. The sign-in banner appears only until you sign in.
+- **Thumbnail grid (on Home):** each PDF is a tile with a rounded, shadowed cover showing the page you're on, its name, a reading-progress bar and its status. All PDFs are listed most recently opened first.
+- **Look:** a polished theme in both dark and light: soft gradient toolbars, rounded tabs, buttons, menus and search fields, slim scrollbars, and an indigo-violet accent.
 - **Catalogue folders (on Home):** organise PDFs into folders and subfolders (Books → Physics). Folders and each PDF's folder sync to all your devices, including Android.
   - The folder tree on the left shows **All PDFs**, **Unfiled** and your folders, with counts.
   - Drag PDFs onto a folder (select several with Ctrl/Shift), or right-click → **Move to**.
@@ -22,10 +24,24 @@ A C++/Qt 6 version of the PenReader Android app. It syncs with the Android app t
   - **Focus mode** (F8, or the button next to ⋯) hides the toolbar, tabs, status bar and side panels, leaving just the PDF. The window keeps its size; F11 is real full screen.
   - Leave focus mode with F8, Esc, or the faint button in the top-right corner. All keyboard shortcuts keep working in focus mode.
 - **PDF reading:** continuous scroll, zoom (Ctrl + wheel, touchpad or touch pinch), rotate, full screen, search, link following, table of contents, and vim-style keyboard control (see below).
+- **Mouse pointer (default):** PDFs open with the normal arrow pointer, so clicking never draws by accident.
+  - **Left drag selects text** (start anywhere; it selects from the nearest text). It never moves the page.
+  - **Right drag moves the page.** A right **click** (without dragging) opens the menu for the selected text (highlight, translate to தமிழ், copy, define…) or for the word under the mouse. A slightly shaky click still counts as a click.
+  - **Middle drag** moves the page. **Double-click** a word to define it.
+  - The cursor is the normal arrow; it becomes a hand only while the page is being dragged, and a text cursor while you select. Selecting is updated once per screen refresh, so it keeps up with the mouse.
+  - **Every one of these is a setting:** Settings → Reading → **Mouse**. **Left drag**: select text (default), move the page, or select on text and move elsewhere. **Right drag**: move the page (default), select text, or nothing. A right click always opens the menu. A summary shows what you've chosen, and "Restore mouse defaults" resets it.
+  - **Back from the pen:** press **Esc**, click the pen (or highlighter / eraser) button again, click the pointer (first toolbar button), or press 6. With the pen, the left button writes and the right/middle buttons work as set.
+- **Select text:** with the pointer, hold the **right** button and drag over text to select it. Right-click the selection for:
+  - **Highlight** (yellow) or **Highlight in colour** (green, blue, pink, orange), **Underline**, and **Remove highlight**. These are saved as normal highlighter/pen ink: undoable, and synced to Android.
+  - **Translate selection to தமிழ்** or **Translate the whole sentence to தமிழ்**. A window shows the English and Tamil with Copy buttons. Translations use Google Translate (MyMemory as a fallback); only the text you choose is sent. Each one is saved on this computer, so it works offline afterwards.
+  - **Define** (for one to three words), **Copy** (or Ctrl+C), **Copy the whole sentence**, **Find in this PDF**, **Smart search all PDFs** and **Search the web**.
+  - **Highlights & comments:** click a highlight to see its text and your comment in a small card, with **Add/Edit comment** and **Remove highlight** (right-clicking a highlight offers the same). **F7** (or the 💬 toolbar button) opens the **Highlights & comments** panel: every highlight in the PDF with its page, text and comment; click one to jump to it, or edit / remove it there. Commented highlights show a small orange bubble. Comments are stored with the highlight in the synced ink, so they appear on Android too, and Undo works for them.
+  - Esc or a click elsewhere clears the selection. Right-clicking a single word without selecting also offers Define, Translate this sentence and Find.
+- **Fast find (Ctrl+F or /):** runs in the background on its own copy of the PDF, starting at the page you're on, so the first match shows almost instantly even in long books. The total count follows within a second or two, and later searches in the same PDF are near-instant.
 - **Resume:** each PDF reopens at the exact spot you left it. Positions sync both ways with Android.
 - **Pen notes:** pen (pressure-sensitive), highlighter and eraser, with undo/redo.
   - **Pen tablets** (Wacom, Windows Ink pens, Galaxy Book S Pen, …): write with pressure. The **eraser end** or a held **barrel button** erases, like the S Pen side button on Android.
-  - **Mouse:** draws with the current tool. Turn off "Mouse draws" (M) to let only the pen draw, so the mouse drag pans.
+  - **Mouse:** draws once you pick the pen, highlighter or eraser. Turn off "Mouse draws" (M) to let only the pen draw, so the mouse drag pans.
   - **Touch:** one finger scrolls, two fingers zoom.
 - **Dictionary with English and தமிழ் tabs:** right-click or double-click a word, or use the dictionary tool (D). You get pronunciation audio, examples, synonyms and Tamil meanings. The sources match Android: dictionaryapi.dev with a Wiktionary fallback for English, and Wiktionary plus the bundled offline word list for Tamil. Lookups are cached, so they work offline afterwards.
 - **My Words** (Ctrl+M): saved words with English definition, Tamil meaning, the sentence it came from, and the document and page. You can search (in English or Tamil), sort, and jump back to the page.
@@ -45,6 +61,31 @@ A C++/Qt 6 version of the PenReader Android app. It syncs with the Android app t
 - **Scanned PDFs** (images without a text layer) can't be searched.
 
 Start Ollama with `ollama serve`, or enable its service with `sudo systemctl enable --now ollama`.
+
+## Selecting text with the keyboard (vim visual mode)
+
+Press **v** (or Ctrl+Shift+V) to start selecting at the current search match, or at the first text on screen; **V** selects whole lines. A caret shows where you are and the status bar lists the keys. If you already have a mouse selection, **v** continues it.
+
+| Keys in visual mode | Does |
+|---|---|
+| h l j k (or arrows) | move by character / line |
+| w e b | next word / end of word / previous word |
+| 0 ^ $ (Home / End) | start / end of the line |
+| ( ) | previous / next sentence |
+| o | jump to the other end of the selection |
+| v V | switch between character and line selection |
+| y / Y | copy / copy the whole sentence |
+| Enter, 1–5 | highlight (yellow; 1 yellow 2 green 3 blue 4 pink 5 orange) |
+| u | underline |
+| c | highlight and add a comment |
+| t / T | translate the selection / whole sentence to Tamil |
+| K | define the word |
+| / s | find it in this PDF / Smart search all PDFs |
+| Esc | leave visual mode |
+
+Shortcuts for any selection (mouse or keyboard), changeable in Settings → Keyboard: **Ctrl+Shift+H** highlight, **Ctrl+Shift+U** underline, **Ctrl+Shift+M** highlight + comment, **Ctrl+Shift+T** translate, **Ctrl+Alt+T** translate the sentence, **Ctrl+Shift+L** define, **Ctrl+Shift+C** copy the sentence, Ctrl+C copy. **]** / **[** (Ctrl+Alt+↓ / ↑) jump to the next / previous highlight and show its comment in the status bar. **F7** opens the Highlights & comments panel.
+
+**Search:** after typing a search, **Enter** returns to the page but the search bar stays open, showing which match you're on ("3 of 16 matches"). **n** / **N** move between matches and the count follows; **Esc** closes the bar. With the bar closed, n / N still show "match 3 of 16" in the status bar.
 
 ## Keyboard (vim / zathura style)
 
@@ -114,6 +155,15 @@ The desktop app needs its own OAuth client, **in the same Google Cloud project a
 1. Go to Google Cloud Console → **APIs & Services → Credentials → Create credentials → OAuth client ID**.
 2. For **Application type**, choose **Desktop app**, then download its JSON.
 3. In PenReader, use **File → Google client file…**, pick that JSON, then **File → Sign in with Google…**. Your default browser opens Google's sign-in page; approve, then return to the app. A small window shows the sign-in link with a **Copy link** button, so if no browser opens you can paste the link into one yourself. On Linux the browser is launched with `xdg-open` (your default browser), because Qt's desktop-portal route silently does nothing on plain window managers such as dwm or i3.
+
+**Sharing the app with others:** build the client into the program, so they can sign in without loading a file:
+
+```sh
+cmake -S . -B build-share -G Ninja -DPENREADER_GOOGLE_CLIENT=$HOME/.config/PenReader/PenReader/google_oauth_client.json
+cmake --build build-share
+```
+
+The JSON never goes into the source code; only builds you make with this option contain it. A client file someone loads themselves still takes priority. For desktop apps Google treats this client as public, and it gives no access to anyone's data by itself: each person still signs in and approves, and only reaches their own Drive. Until the consent screen is published, each person's Gmail address must be on your **Test users** list.
 
 The client file is stored as `google_oauth_client.json` in the app's config folder (`~/.config/PenReader/` or `%LOCALAPPDATA%\PenReader\PenReader\`). For a portable setup you can also put it next to `penreader.exe`.
 

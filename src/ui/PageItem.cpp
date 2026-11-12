@@ -65,9 +65,32 @@ void PageItem::drawStroke(QPainter *p, const Stroke &s)
         QPainterPath path(QPointF(s.x(0), s.y(0)));
         for (int i = 1; i < n; ++i)
             path.lineTo(s.x(i), s.y(i));
+        // Like a real highlighter: tint the paper, never cover the letters (darken-blend on light
+        // pages, lighten-blend with a deeper tint on dark pages).
+        const Theme::PageColors &pc = Theme::pageColors();
+        const bool darkPage = !pc.original && pc.background.lightnessF() < 0.5;
+        QColor tint = color;
+        tint.setAlphaF(darkPage ? qMin(1.0f, tint.alphaF() * 1.2f) * 0.55f : qMin(1.0f, tint.alphaF() * 1.6f));
+        p->save();
+        p->setCompositionMode(darkPage ? QPainter::CompositionMode_Screen : QPainter::CompositionMode_Multiply);
         p->setBrush(Qt::NoBrush);
-        p->setPen(QPen(color, s.width, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin));
+        p->setPen(QPen(tint, s.width, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin));
         p->drawPath(path);
+        p->restore();
+        if (!s.note.isEmpty()) {
+            // Commented highlight: a small speech bubble at the end of its first line.
+            const qreal r = qMax(0.006, s.width * 0.42);
+            const QPointF at(s.x(n - 1) + s.width / 2 + r * 1.2, s.y(n - 1) - s.width / 2);
+            QPainterPath bubble;
+            bubble.addRoundedRect(QRectF(at.x() - r, at.y() - r * 0.8, r * 2, r * 1.6), r * 0.45, r * 0.45);
+            QPolygonF tail;
+            tail << QPointF(at.x() - r * 0.6, at.y() + r * 0.7) << QPointF(at.x() - r * 0.9, at.y() + r * 1.3)
+                 << QPointF(at.x() - r * 0.1, at.y() + r * 0.7);
+            bubble.addPolygon(tail);
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(255, 167, 38));
+            p->drawPath(bubble.simplified());
+        }
         return;
     }
     if (n == 1) {

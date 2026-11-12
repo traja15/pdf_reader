@@ -31,6 +31,7 @@ QList<Command> buildCommands()
         {"setMark", "Navigation", "Set a mark (then press a letter)", {}, {K("M")}},
         {"jumpToMark", "Navigation", "Go to a mark (then press its letter)", {}, {K("'")}},
         {"contents", "Navigation", "Table of contents", {K(Qt::Key_F9)}, {}},
+        {"highlights", "Navigation", "Highlights & comments", {K(Qt::Key_F7)}, {}},
 
         // Search & links
         {"find", "Search & links", "Search in document", {K(QKeySequence::Find)}, {K("/")}},
@@ -41,6 +42,19 @@ QList<Command> buildCommands()
         {"smartSearch", "Search & links", "Smart search (ask your PDFs)", {K("Ctrl+K")}, {}},
         {"lookupWord", "Search & links", "Look up a word in the dictionary…", {K("Ctrl+L")}, {}},
         {"dictionaryPanel", "Search & links", "Show/hide dictionary panel", {K("Ctrl+Shift+D")}, {}},
+
+        // Selecting text & highlights (actions work on a mouse or visual-mode selection)
+        {"visualMode", "Text & highlights", "Visual mode: select text with the keyboard", {K("Ctrl+Shift+V")}, {K("V")}},
+        {"visualLine", "Text & highlights", "Visual line mode: select whole lines", {}, {K("Shift+V")}},
+        {"highlightSel", "Text & highlights", "Highlight the selected text", {K("Ctrl+Shift+H")}, {}},
+        {"underlineSel", "Text & highlights", "Underline the selected text", {K("Ctrl+Shift+U")}, {}},
+        {"commentSel", "Text & highlights", "Highlight and comment on the selected text", {K("Ctrl+Shift+M")}, {}},
+        {"translateSel", "Text & highlights", "Translate the selected text to Tamil", {K("Ctrl+Shift+T")}, {}},
+        {"translateSentence", "Text & highlights", "Translate the whole sentence to Tamil", {K("Ctrl+Alt+T")}, {}},
+        {"defineSel", "Text & highlights", "Define the selected word", {K("Ctrl+Shift+L")}, {}},
+        {"copySentence", "Text & highlights", "Copy the whole sentence", {K("Ctrl+Shift+C")}, {}},
+        {"nextHighlight", "Text & highlights", "Next highlight", {K("Ctrl+Alt+Down")}, {K("]")}},
+        {"prevHighlight", "Text & highlights", "Previous highlight", {K("Ctrl+Alt+Up")}, {K("[")}},
 
         // View
         {"zoomIn", "View", "Zoom in", {K(QKeySequence::ZoomIn)}, {K("+")}},
@@ -58,6 +72,7 @@ QList<Command> buildCommands()
         {"highlighterTool", "Editing & tools", "Highlighter", {K("2"), K("H")}, {}},
         {"eraserTool", "Editing & tools", "Eraser", {K("3"), K("E")}, {}},
         {"lookupTool", "Editing & tools", "Dictionary tool (click a word)", {K("4"), K("D")}, {}},
+        {"handTool", "Editing & tools", "Mouse pointer (drags the page when zoomed in)", {K("6"), K("Shift+M")}, {}},
         {"mouseDraws", "Editing & tools", "Mouse draws on/off", {K("5"), K("M")}, {}},
 
         // Tabs & app

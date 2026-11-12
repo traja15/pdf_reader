@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/Models.h"
+#include "core/TextSearch.h"
+#include "ui/MouseScheme.h"
 #include "ui/ToolSettings.h"
 
 #include <QGraphicsView>
@@ -12,9 +14,24 @@
 class AppContext;
 class PageItem;
 class QPdfDocument;
-class QPdfSearchModel;
+class QPdfSelection;
+class QGraphicsRectItem;
+class QKeyEvent;
+class TextSearch;
+struct TextHit;
 class QPdfPageRenderer;
 class QGraphicsPathItem;
+
+/// A highlight on a page: one or more highlighter strokes (one per line), with its text and comment.
+struct Highlight {
+    int page = 0;
+    QString key;           ///< The strokes' group id, or the stroke id for a hand-drawn highlight.
+    QVector<Stroke> strokes;
+    QString text;          ///< The highlighted text.
+    QString note;          ///< Your comment (empty: none yet).
+    quint32 color = 0;
+    QRectF box;            ///< Normalised to page width, like ink.
+};
 
 /// A word picked on a page (for the dictionary).
 struct PickedWord {
@@ -51,6 +68,41 @@ public:
 
     ToolSettings tools() const { return m_tools; }
     void setTools(const ToolSettings &t);
+
+    // Highlights and their comments
+    QVector<Highlight> highlights() const;
+    std::optional<Highlight> highlightAt(const QPointF &viewportPos) const;
+    void setHighlightNote(int page, const QString &key, const QString &note);
+    void removeHighlight(int page, const QString &key);
+    /// Scrolls to a highlight and flashes it.
+    void revealHighlight(int page, const QString &key);
+
+    // Text selection (mouse pointer: drag over text). Right-click it for highlight, translate, …
+    bool hasSelection() const { return !m_sel.text.isEmpty(); }
+    /// Where a point on a page (PDF points) is in the viewport right now.
+    QPoint viewportPointFor(int page, const QPointF &pdfPoint) const;
+    QString selectedText() const { return m_sel.text; }
+    void clearSelection();
+    void copySelection();
+    /// Marks the selected lines with highlighter ink (synced, undoable, same as drawn highlights).
+    QString highlightSelection(quint32 argb); ///< Returns the new highlight's key.
+    void underlineSelection();
+    // Vim visual mode: v (characters) / V (lines), then motions and actions — see visualKey().
+    bool inVisualMode() const { return m_visual; }
+    void enterVisualMode(bool lineWise);
+    void exitVisualMode(bool keepSelection);
+    // Actions on the selection (selection menu, visual mode and keyboard shortcuts).
+    void translateSelection(bool sentence);
+    void defineSelection();
+    void findSelection();
+    void smartSearchSelection();
+    /// Highlights the selection and asks for a comment on it.
+    void commentSelection();
+    /// Next / previous highlight from where you are (wraps round).
+    void gotoHighlight(bool next);
+    /// The whole sentence(s) the selection sits in.
+    QString selectionSentence() const;
+    bool isZoomedIn() const;
 
     bool canUndo() const { return !m_undo.isEmpty(); }
     bool canRedo() const { return !m_redo.isEmpty(); }
@@ -112,6 +164,16 @@ signals:
     void zoomChanged(int percent);
     /// Search progress: current match (1-based, 0 = none) of total.
     void searchStatus(int current, int total);
+    /// Ink changed (drawn, erased, undone, synced): the list of highlights may have changed.
+    void highlightsChanged();
+    /// A click on a highlight (with the mouse pointer); show its comment.
+    void highlightClicked(const Highlight &highlight, const QPoint &globalPos);
+    /// "Add comment" / "Edit comment" was chosen for a highlight.
+    void editHighlightNoteRequested(const Highlight &highlight);
+    /// From the selection menu.
+    void translateRequested(const QString &text);
+    void findRequested(const QString &text);
+    void smartSearchRequested(const QString &text);
     /// A short status message (mark set, no links on screen, …); empty clears it.
     void message(const QString &text);
 
@@ -177,6 +239,36 @@ private:
     void followLink(const QPdfLink &link);
     QRectF toScene(int page, const QRectF &pointsRect) const;
     void onSearchResults();
+    void onSearchFinished();
+    void updateCursor();
+    struct TextSelection {
+        int page = -1;
+        QPointF from; ///< PDF points on [page]
+        QString text;
+        QList<QRectF> rects; ///< One per line, in PDF points
+        int start = -1, end = -1; ///< Character indices on the page
+    };
+    bool overText(const QPointF &viewportPos);
+    QPointF pagePoint(int page, const QPointF &viewportPos) const;
+    bool beginSelection(const QPointF &viewportPos);
+    void extendSelection(const QPointF &viewportPos);
+    void showSelectionMenu(const QPoint &globalPos);
+    void showSelection(const QPdfSelection &sel);
+    bool needSelection();
+    bool visualKey(QKeyEvent *e);
+    void updateVisualSelection();
+    int vLineStart(int i) const;
+    int vLineEnd(int i) const;
+    bool m_visual = false;
+    bool m_visualLine = false;
+    int m_vAnchor = 0;
+    int m_vCaret = 0;
+    QString m_vText; ///< Text of the page being selected (character indices match the PDF's).
+    QGraphicsRectItem *m_caretItem = nullptr;
+    QString m_hlNavKey; ///< Last highlight reached with ] / [ ...
+    Position m_hlNavPos; ///< ... and where that left the view.
+    QVector<Stroke> highlightsInSelection() const;
+    void addStrokes(int page, const QVector<Stroke> &strokes);
     int searchIndexFrom(const Position &from, bool forward, bool wrap) const;
     void showSearchResult(int index);
 
@@ -188,6 +280,22 @@ private:
     QVector<qreal> m_pageTops;
     QVector<QSizeF> m_pagePoints; ///< Page sizes in PDF points (for text lookup).
     QGraphicsPathItem *m_highlight = nullptr;
+    TextSelection m_sel;
+    bool m_selecting = false;
+    enum class Gesture { None, Pending, Pan, Select };
+    Gesture m_gesture = Gesture::None;
+    Qt::MouseButton m_gestureButton = Qt::NoButton;
+    QPointF m_gestureStart;
+    void endGesture();
+    void startTextSelection();
+    QTimer m_longPress;
+    QTimer m_selTimer;
+    QPointF m_pendingSelPos;
+    MouseScheme m_mouse;
+    QGraphicsPathItem *m_selItem = nullptr;
+    QHash<int, QList<QRectF>> m_lineBoxes;
+    mutable QHash<QString, QString> m_highlightText; ///< Text under hand-drawn highlights (looked up once).
+    QString textUnder(int page, const Stroke &s) const; ///< Text line boxes per page (points), for the I-beam cursor.
 
     ToolSettings m_tools;
     qreal m_zoom = 1.0; ///< Relative to fit-width.
@@ -216,6 +324,7 @@ private:
     bool m_restoring = false;
     QTimer m_saveTimer;
     QTimer m_evictTimer;
+    quint64 m_renderGeneration = 0; ///< Bumped on close / colour change; late recolours are dropped.
 
     QVector<Position> m_jumpBack;
     QVector<Position> m_jumpForward;
@@ -223,7 +332,13 @@ private:
     QVector<Hint> m_hints;
     QString m_hintTyped;
 
-    QPdfSearchModel *m_search = nullptr;
+    TextSearch *m_search = nullptr;
+    quint64 m_searchId = 0;
+    bool m_searchDone = false;
+    int m_searchTotal = 0; ///< Matches in the whole PDF (known before all highlight boxes are).
+    QMap<int, QList<TextHit>> m_hitsByPage; ///< As they stream in (any page order).
+    QList<TextHit> m_hits;                  ///< Flattened in reading order.
+    std::optional<std::pair<int, QRectF>> m_currentHit; ///< Keeps the current match as new pages arrive.
     QString m_searchText;
     bool m_searchBackward = false;
     bool m_searchPending = false; ///< Waiting for the first match to jump to.
@@ -232,5 +347,4 @@ private:
     QGraphicsPathItem *m_searchItem = nullptr;
     QGraphicsPathItem *m_currentMatchItem = nullptr;
     QTimer m_searchTimer;
-    QTimer m_searchSettle;
 };

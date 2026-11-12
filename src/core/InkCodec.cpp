@@ -13,13 +13,17 @@ QString encode(const QVector<Stroke> &strokes)
         QJsonArray pts;
         for (float v : s.points)
             pts.append(double(v));
-        arr.append(QJsonObject{
+        QJsonObject o{
             {"id", s.id},
             {"tool", s.tool == InkTool::Highlighter ? "HIGHLIGHTER" : "PEN"},
             {"color", double(s.color)},
             {"width", double(s.width)},
             {"points", pts},
-        });
+        };
+        if (!s.group.isEmpty()) o["group"] = s.group;
+        if (!s.text.isEmpty()) o["text"] = s.text;
+        if (!s.note.isEmpty()) o["note"] = s.note;
+        arr.append(o);
     }
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }
@@ -38,6 +42,9 @@ QVector<Stroke> decode(const QString &json)
         s.tool = o["tool"].toString() == "HIGHLIGHTER" ? InkTool::Highlighter : InkTool::Pen;
         s.color = quint32(qint64(o["color"].toDouble()));
         s.width = float(o["width"].toDouble());
+        s.group = o["group"].toString();
+        s.text = o["text"].toString();
+        s.note = o["note"].toString();
         const QJsonArray pts = o["points"].toArray();
         s.points.reserve(pts.size());
         for (const QJsonValue &p : pts)

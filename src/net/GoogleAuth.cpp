@@ -60,8 +60,10 @@ QString GoogleAuth::clientConfigPath()
 
 void GoogleAuth::loadClient()
 {
-    // Config dir first, then next to the executable (handy for portable Windows installs).
-    for (const QString &path : {clientConfigPath(), QCoreApplication::applicationDirPath() + "/google_oauth_client.json"}) {
+    // Config dir first (a file the user chose), then next to the executable (handy for portable
+    // Windows installs), then one built into the program (cmake -DPENREADER_GOOGLE_CLIENT=…).
+    for (const QString &path : {clientConfigPath(), QCoreApplication::applicationDirPath() + "/google_oauth_client.json",
+                                QStringLiteral(":/google/google_oauth_client.json")}) {
         QFile f(path);
         if (!f.open(QIODevice::ReadOnly))
             continue;

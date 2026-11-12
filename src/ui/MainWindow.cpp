@@ -15,6 +15,7 @@
 #include "ui/SettingsDialog.h"
 #include "ui/SmartSearchView.h"
 #include "ui/Theme.h"
+#include "ui/TranslationDialog.h"
 #include "ui/VocabWindow.h"
 
 #include <QAction>
@@ -25,6 +26,8 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDockWidget>
+#include <QGuiApplication>
+#include <QListWidget>
 #include <QFile>
 #include <QFileDialog>
 #include <QFutureWatcher>
@@ -154,6 +157,24 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
     addDockWidget(Qt::LeftDockWidgetArea, m_contentsDock);
     m_contentsDock->hide();
     connect(m_contentsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) { if (visible) updateContents(); });
+
+    // Highlights & comments of the PDF in the current tab (F7).
+    m_highlightList = new QListWidget;
+    m_highlightList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_highlightList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_highlightList->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(m_highlightList, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
+        if (ReaderView *r = currentReader()) r->revealHighlight(item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toString());
+    });
+    connect(m_highlightList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (ReaderView *r = currentReader()) r->revealHighlight(item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toString());
+    });
+    m_highlightsDock = new QDockWidget("Highlights && comments", this);
+    m_highlightsDock->setObjectName("highlightsDock");
+    m_highlightsDock->setWidget(m_highlightList);
+    addDockWidget(Qt::RightDockWidgetArea, m_highlightsDock);
+    m_highlightsDock->hide();
+    connect(m_highlightsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) { if (visible) updateHighlights(); });
     connect(m_contents, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *item) {
         if (ReaderView *r = currentReader(); r && item->data(0, Qt::UserRole).isValid()) {
             r->goToPage(item->data(0, Qt::UserRole).toInt(), item->data(0, Qt::UserRole + 1).toDouble());
@@ -195,8 +216,9 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
         if (!r) return;
         if (Commands::vimEnabled()) {
             // Vim: Enter accepts the search and returns to the page; n / N move between matches.
+            // The bar stays open so you can see which match you're on (Esc closes it).
             if (!r->hasCurrentMatch()) r->findNext();
-            closeFindBar();
+            r->setFocus();
         } else {
             r->findNext();
         }
@@ -235,6 +257,7 @@ MainWindow::MainWindow(AppContext &ctx, QWidget *parent) : QMainWindow(parent), 
     restoreState(settings.value("window/state").toByteArray());
     m_dictDock->hide();
     m_contentsDock->hide();
+    m_highlightsDock->hide();
     m_findBar->hide();
     updateToolActions();
     onTabChanged();
@@ -334,14 +357,23 @@ void MainWindow::buildActions()
         QAction *a = command(id, text, iconName);
         a->setCheckable(true);
         m_toolGroup->addAction(a);
-        connect(a, &QAction::triggered, this, [this, t] { ToolSettings s = m_tools; s.tool = t; setTools(s); });
+        connect(a, &QAction::triggered, this, [this, t] {
+            ToolSettings s = m_tools;
+            // Clicking the tool you're already using puts the mouse pointer back.
+            s.tool = m_tools.tool == t && t != ReaderTool::Hand ? ReaderTool::Hand : t;
+            setTools(s);
+        });
         return a;
     };
+    m_handAct = tool("handTool", "pointer",
+                     "Mouse pointer (default): when zoomed in it becomes a hand that drags the page. "
+                     "Pick the pen whenever you want to write.",
+                     ReaderTool::Hand);
     m_penAct = tool("penTool", "pen", "Pen", ReaderTool::Pen);
     m_highlighterAct = tool("highlighterTool", "highlighter", "Highlighter", ReaderTool::Highlighter);
     m_eraserAct = tool("eraserTool", "eraser", "Eraser (or the pen's eraser end / barrel button)", ReaderTool::Eraser);
     m_lookupToolAct = tool("lookupTool", "book", "Dictionary tool: click a word to define it", ReaderTool::Lookup);
-    m_penAct->setChecked(true);
+    (m_tools.tool == ReaderTool::Hand ? m_handAct : m_penAct)->setChecked(true);
 
     m_mouseDrawsAct = command("mouseDraws", "Mouse draws (off: only a pen tablet draws, the mouse pans)", "mouse");
     m_mouseDrawsAct->setCheckable(true);
@@ -446,7 +478,34 @@ void MainWindow::buildActions()
         m_contentsDock->setVisible(!m_contentsDock->isVisible());
         if (m_contentsDock->isVisible()) m_contents->setFocus();
     });
+    readerCommand("highlights", "Highlights & comments", [this](ReaderView *) {
+        m_highlightsDock->setVisible(!m_highlightsDock->isVisible());
+        if (m_highlightsDock->isVisible()) m_highlightList->setFocus();
+    });
+    m_commands.value("highlights")->setIcon(icon("notes"));
+    m_commands.value("highlights")->setProperty("themeIcon", "notes");
     readerCommand("find", "Search in document…", [this](ReaderView *) { openFindBar(false); });
+    // Selected text & highlights
+    readerCommand("visualMode", "Visual mode (select text with the keyboard)", [](ReaderView *r) { r->enterVisualMode(false); });
+    readerCommand("visualLine", "Visual line mode", [](ReaderView *r) { r->enterVisualMode(true); });
+    readerCommand("highlightSel", "Highlight selected text", [](ReaderView *r) {
+        if (r->hasSelection()) r->highlightSelection(0x66FFEB3B);
+        else r->translateSelection(false); // no selection: shows the "select text first" hint
+    });
+    readerCommand("underlineSel", "Underline selected text", [](ReaderView *r) {
+        if (r->hasSelection()) r->underlineSelection(); else r->translateSelection(false);
+    });
+    readerCommand("commentSel", "Highlight and comment…", [](ReaderView *r) { r->commentSelection(); });
+    readerCommand("translateSel", "Translate selection to Tamil", [](ReaderView *r) { r->translateSelection(false); });
+    readerCommand("translateSentence", "Translate sentence to Tamil", [](ReaderView *r) { r->translateSelection(true); });
+    readerCommand("defineSel", "Define selected word", [](ReaderView *r) { r->defineSelection(); });
+    readerCommand("copySentence", "Copy the whole sentence", [this](ReaderView *r) {
+        if (!r->hasSelection()) { r->translateSelection(false); return; }
+        QGuiApplication::clipboard()->setText(r->selectionSentence());
+        statusBar()->showMessage("Sentence copied", 2000);
+    });
+    readerCommand("nextHighlight", "Next highlight", [](ReaderView *r) { r->gotoHighlight(true); });
+    readerCommand("prevHighlight", "Previous highlight", [](ReaderView *r) { r->gotoHighlight(false); });
     readerCommand("findBackward", "Search backwards…", [this](ReaderView *) { openFindBar(true); });
     readerCommand("findNext", "Next match", [](ReaderView *r) { r->findNext(); });
     readerCommand("findPrev", "Previous match", [](ReaderView *r) { r->findPrevious(); });
@@ -490,6 +549,7 @@ void MainWindow::buildToolbars()
     auto *readerSpacer = new QWidget;
     readerSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_readerBar->addWidget(readerSpacer);
+    m_readerBar->addAction(m_commands.value("highlights"));
     m_readerBar->addAction(m_focusAct);
 }
 
@@ -506,6 +566,7 @@ void MainWindow::buildMoreMenu()
     m_moreMenu->addAction(m_fullScreenAct);
     m_moreMenu->addAction(m_rotateAct);
     m_moreMenu->addAction(m_commands.value("contents"));
+    m_moreMenu->addAction(m_commands.value("highlights"));
     m_moreMenu->addAction(m_mouseDrawsAct);
     m_moreMenu->addSeparator();
     for (QAction *menu : menuBar()->actions())
@@ -566,7 +627,7 @@ void MainWindow::buildMenus()
     QMenu *go = menuBar()->addMenu("&Go");
     for (const char *id : {"nextPage", "prevPage", "firstPage", "lastPage", "goToPage", "", "halfPageDown", "halfPageUp",
                            "", "jumpBack", "jumpForward", "setMark", "jumpToMark", "", "find", "findBackward", "findNext",
-                           "findPrev", "followLink", "", "contents"}) {
+                           "findPrev", "followLink", "", "contents", "highlights"}) {
         if (!*id) go->addSeparator();
         else go->addAction(m_commands.value(id));
     }
@@ -622,6 +683,24 @@ void MainWindow::addReaderTab(const Document &doc, int page, bool activate, doub
     m_ctx.docs->markOpened(doc.docKey);
 
     connect(reader, &ReaderView::wordPicked, this, [this, reader](const PickedWord &w) { showDefinition(reader, w); });
+    connect(reader, &ReaderView::highlightsChanged, this, [this, reader] {
+        if (reader == currentReader() && m_highlightsDock->isVisible()) updateHighlights();
+    });
+    connect(reader, &ReaderView::highlightClicked, this, [this, reader](const Highlight &h, const QPoint &at) { showHighlightPopup(reader, h, at); });
+    connect(reader, &ReaderView::editHighlightNoteRequested, this, [this, reader](const Highlight &h) { editHighlightNote(reader, h); });
+    connect(reader, &ReaderView::translateRequested, this, [this](const QString &text) {
+        if (!m_translation) m_translation = new TranslationDialog(this);
+        m_translation->translate(text);
+    });
+    connect(reader, &ReaderView::findRequested, this, [this](const QString &text) {
+        openFindBar(false);
+        m_findEdit->setText(text.simplified());
+    });
+    connect(reader, &ReaderView::smartSearchRequested, this, [this](const QString &text) {
+        showSmartSearch();
+        m_smart->setQuery(text.simplified());
+        m_smart->search(text.simplified());
+    });
     connect(reader, &ReaderView::undoStateChanged, this, [this, reader] { if (reader == currentReader()) updateReaderActions(); });
     connect(reader, &ReaderView::pageChanged, this, [this, reader](int p, int count) {
         if (reader == currentReader()) m_pageLabel->setText(QStringLiteral("Page %1 of %2").arg(p + 1).arg(count));
@@ -637,7 +716,11 @@ void MainWindow::addReaderTab(const Document &doc, int page, bool activate, doub
         if (reader != currentReader()) return;
         if (reader->searchText().isEmpty()) m_findStatus->clear();
         else if (total == 0) m_findStatus->setText("  no matches yet");
-        else m_findStatus->setText(QStringLiteral("  %1 of %2").arg(current).arg(total));
+        else m_findStatus->setText(QStringLiteral("  <b>%1</b> of %2 matches%3").arg(current).arg(total)
+                                       .arg(Commands::vimEnabled() ? QStringLiteral("  ·  n / N: next / previous  ·  Esc: close") : QString()));
+        // With the bar closed, n / N still say where you are.
+        if (!m_findBar->isVisible() && current > 0)
+            statusBar()->showMessage(QStringLiteral("“%1”: match %2 of %3").arg(reader->searchText()).arg(current).arg(total), 4000);
     });
 
     if (activate)
@@ -695,6 +778,8 @@ void MainWindow::onTabChanged()
     }
     if (m_contentsDock->isVisible())
         updateContents();
+    if (m_highlightsDock->isVisible())
+        updateHighlights();
     updateReaderActions();
     saveSession();
 }
@@ -896,10 +981,20 @@ void MainWindow::showVocab()
 
 void MainWindow::setTools(const ToolSettings &tools)
 {
+    const bool changed = tools.tool != m_tools.tool;
     m_tools = tools;
     for (ReaderView *r : readers())
         r->setTools(tools); // same tools in every tab
     updateToolActions();
+    QAction *act = tools.tool == ReaderTool::Hand ? m_handAct : tools.tool == ReaderTool::Pen ? m_penAct
+                 : tools.tool == ReaderTool::Highlighter ? m_highlighterAct
+                 : tools.tool == ReaderTool::Eraser ? m_eraserAct : m_lookupToolAct;
+    if (act) act->setChecked(true);
+    if (changed && currentReader())
+        statusBar()->showMessage(tools.tool == ReaderTool::Hand
+                                     ? QStringLiteral("Mouse pointer")
+                                     : act->text().section(" (", 0, 0) + " — press Esc or click it again to go back to the mouse pointer",
+                                 4000);
 }
 
 // ---------------------------------------------------------------- full screen
@@ -1214,6 +1309,12 @@ void MainWindow::onEscape()
         toggleFullScreen();
     } else if (m_focus) {
         toggleFocusMode();
+    } else if (ReaderView *r = currentReader(); r && r->hasSelection()) {
+        r->clearSelection();
+    } else if (currentReader() && m_tools.tool != ReaderTool::Hand) {
+        ToolSettings s = m_tools; // Esc leaves the pen / highlighter / eraser: back to the mouse pointer
+        s.tool = ReaderTool::Hand;
+        setTools(s);
     } else if (ReaderView *r = currentReader()) {
         r->clearSearch();
         r->clearHighlight();
@@ -1275,12 +1376,40 @@ void MainWindow::showShortcutHelp()
         }
         new QTreeWidgetItem(tree, {"    " + c.name, Commands::describe(keys.value(c.id))});
     }
+    // Keys inside visual mode (fixed, like vim).
+    {
+        auto *header = new QTreeWidgetItem(tree, {"In visual mode (after v or V)"});
+        QFont f = header->font(0);
+        f.setBold(true);
+        header->setFont(0, f);
+        header->setFirstColumnSpanned(true);
+        const QList<std::pair<QString, QString>> visual = {
+            {"Move by character / line", "h  l  j  k  (or arrow keys)"},
+            {"Next word / end of word / previous word", "w  e  b"},
+            {"Start / end of line", "0  ^  $  (Home / End)"},
+            {"Next / previous sentence", ")  ("},
+            {"Jump to the other end of the selection", "o"},
+            {"Switch character ↔ line selection", "v  V"},
+            {"Copy / copy the whole sentence", "y  Y"},
+            {"Highlight (yellow) / in a colour", "Enter  ·  1 yellow  2 green  3 blue  4 pink  5 orange"},
+            {"Underline", "u"},
+            {"Highlight and add a comment", "c"},
+            {"Translate selection / whole sentence to Tamil", "t  T"},
+            {"Define the word", "K"},
+            {"Find in this PDF / Smart search", "/  s"},
+            {"Leave visual mode", "Esc"},
+        };
+        for (const auto &[what, keysText] : visual) new QTreeWidgetItem(tree, {"    " + what, keysText});
+    }
     tree->resizeColumnToContents(0);
     auto *tips = new QLabel(
         "<b>Link hints:</b> press the follow-link key, then type the letters shown on a link.<br>"
         "<b>Marks:</b> press the set-mark key and a letter to remember a spot; the go-to-mark key and that letter "
         "jump back (marks are saved per document).<br>"
-        "<b>Search:</b> matches highlight as you type; Enter returns to the page, then next/previous match move between them.<br>"
+        "<b>Search:</b> matches highlight as you type; Enter returns to the page (the bar stays, showing which match "
+        "you're on), next/previous match move between them, Esc closes the bar.<br>"
+        "<b>Selecting text:</b> drag with the mouse, or press the visual-mode key and move with vim keys; then use the "
+        "Text &amp; highlights shortcuts or the right-click menu. <b>Highlights:</b> click one to see or edit its comment.<br>"
         "<b>Pen tablet:</b> the eraser end or a held barrel button erases. <b>Words:</b> right-click or double-click to define.");
     tips->setWordWrap(true);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
@@ -1340,4 +1469,116 @@ void MainWindow::refreshTabTitles()
         m_tabs->setTabToolTip(i, doc->title);
         if (r == currentReader()) setWindowTitle(doc->title + " — PenReader");
     }
+}
+
+
+// ---------------------------------------------------------------- highlights & comments
+
+void MainWindow::updateHighlights()
+{
+    m_highlightList->clear();
+    ReaderView *r = currentReader();
+    if (!r) {
+        m_highlightsDock->hide();
+        return;
+    }
+    const QVector<Highlight> list = r->highlights();
+    const Theme::Tokens &t = Theme::tokens();
+    if (list.isEmpty()) {
+        auto *hint = new QListWidgetItem("No highlights in this PDF yet.\n\nSelect text (drag with the left button), "
+                                         "right-click it and choose Highlight. Then click a highlight to add a comment.");
+        hint->setFlags(Qt::NoItemFlags);
+        m_highlightList->addItem(hint);
+        return;
+    }
+    for (const Highlight &h : list) {
+        auto *item = new QListWidgetItem;
+        item->setData(Qt::UserRole, h.page);
+        item->setData(Qt::UserRole + 1, h.key);
+        m_highlightList->addItem(item);
+
+        auto *row = new QFrame;
+        auto *lay = new QHBoxLayout(row);
+        lay->setContentsMargins(8, 8, 6, 8);
+        lay->setSpacing(10);
+        auto *bar = new QFrame;
+        bar->setFixedWidth(5);
+        bar->setStyleSheet(QStringLiteral("background: %1; border-radius: 2px;").arg(QColor::fromRgba(h.color | 0xFF000000).name()));
+        auto *label = new QLabel;
+        label->setWordWrap(true);
+        label->setTextFormat(Qt::RichText);
+        const QString text = h.text.isEmpty() ? QStringLiteral("(no text under this highlight)") : h.text;
+        QString html = QStringLiteral("<span style='color:%1'>Page %2</span><br>%3")
+                           .arg(t.muted.name()).arg(h.page + 1).arg((text.size() > 220 ? text.left(218) + "…" : text).toHtmlEscaped());
+        if (!h.note.isEmpty())
+            html += QStringLiteral("<div style='margin-top:4px; color:%1'>💬 %2</div>").arg(t.accent.name(), h.note.toHtmlEscaped().replace("\n", "<br>"));
+        label->setText(html);
+        auto *edit = new QToolButton;
+        edit->setIcon(icon("notes"));
+        edit->setToolTip(h.note.isEmpty() ? "Add comment" : "Edit comment");
+        edit->setAutoRaise(true);
+        auto *remove = new QToolButton;
+        remove->setText("✕");
+        remove->setToolTip("Remove highlight (Undo brings it back)");
+        remove->setAutoRaise(true);
+        connect(edit, &QToolButton::clicked, this, [this, r, h] { editHighlightNote(r, h); });
+        connect(remove, &QToolButton::clicked, this, [r, h] { r->removeHighlight(h.page, h.key); });
+        auto *buttons = new QVBoxLayout;
+        buttons->addWidget(edit);
+        buttons->addWidget(remove);
+        buttons->addStretch(1);
+        lay->addWidget(bar);
+        lay->addWidget(label, 1);
+        lay->addLayout(buttons);
+        row->setMinimumWidth(1);
+        item->setSizeHint(QSize(1, row->sizeHint().height() + 4));
+        m_highlightList->setItemWidget(item, row);
+    }
+}
+
+void MainWindow::editHighlightNote(ReaderView *reader, const Highlight &h)
+{
+    const QString quote = h.text.size() > 120 ? h.text.left(118) + "…" : h.text;
+    bool ok = false;
+    const QString note = QInputDialog::getMultiLineText(this, h.note.isEmpty() ? "Add comment" : "Edit comment",
+                                                        QStringLiteral("Your comment on “%1” (page %2):").arg(quote).arg(h.page + 1),
+                                                        h.note, &ok);
+    if (ok) reader->setHighlightNote(h.page, h.key, note);
+}
+
+void MainWindow::showHighlightPopup(ReaderView *reader, const Highlight &h, const QPoint &at)
+{
+    // A small card next to the click: the highlighted text, its comment, and what you can do.
+    auto *card = new QFrame(this, Qt::Popup);
+    card->setAttribute(Qt::WA_DeleteOnClose);
+    card->setObjectName("card");
+    card->setFixedWidth(360);
+    auto *lay = new QVBoxLayout(card);
+    lay->setContentsMargins(14, 12, 14, 12);
+    lay->setSpacing(8);
+    const Theme::Tokens &t = Theme::tokens();
+    auto *quote = new QLabel(QStringLiteral("<i>“%1”</i>").arg((h.text.size() > 260 ? h.text.left(258) + "…" : h.text).toHtmlEscaped()));
+    quote->setWordWrap(true);
+    auto *note = new QLabel(h.note.isEmpty() ? QStringLiteral("<span style='color:%1'>No comment yet.</span>").arg(t.muted.name())
+                                             : QStringLiteral("💬 %1").arg(h.note.toHtmlEscaped().replace("\n", "<br>")));
+    note->setWordWrap(true);
+    note->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *divider = new QFrame;
+    divider->setObjectName("divider");
+    auto *edit = new QPushButton(h.note.isEmpty() ? "Add comment" : "Edit comment");
+    edit->setProperty("accent", true);
+    auto *remove = new QPushButton("Remove highlight");
+    connect(edit, &QPushButton::clicked, this, [this, card, reader, h] { card->close(); editHighlightNote(reader, h); });
+    connect(remove, &QPushButton::clicked, this, [card, reader, h] { card->close(); reader->removeHighlight(h.page, h.key); });
+    auto *buttons = new QHBoxLayout;
+    buttons->addWidget(edit);
+    buttons->addWidget(remove);
+    buttons->addStretch(1);
+    lay->addWidget(quote);
+    lay->addWidget(divider);
+    lay->addWidget(note);
+    lay->addLayout(buttons);
+    card->adjustSize();
+    card->move(at + QPoint(12, 12));
+    card->show();
 }

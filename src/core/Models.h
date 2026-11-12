@@ -36,6 +36,10 @@ struct Stroke {
     quint32 color = 0xFF000000; ///< ARGB
     float width = 0.0028f;      ///< Fraction of page width.
     QVector<float> points;
+    // Highlights made from selected text (all optional, synced with Android):
+    QString group; ///< Strokes of one highlight across several lines share this id.
+    QString text;  ///< The highlighted text (on the group's first stroke).
+    QString note;  ///< Your comment on the highlight (on the group's first stroke).
 
     int pointCount() const { return int(points.size() / 3); }
     float x(int i) const { return points[i * 3]; }

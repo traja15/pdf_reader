@@ -5,6 +5,7 @@
 #include "core/VocabStore.h"
 #include "net/GoogleAuth.h"
 #include "ui/Commands.h"
+#include "ui/HomeDelegates.h"
 #include "ui/Theme.h"
 #include "ui/Thumbnails.h"
 
@@ -46,19 +47,66 @@ QLabel *heading(const QString &text, qreal scale)
 
 QIcon icon(const QString &name) { return Theme::icon(name); }
 
+QFrame *divider()
+{
+    auto *line = new QFrame;
+    line->setObjectName("divider");
+    return line;
+}
+
+QLabel *chip()
+{
+    auto *label = new QLabel;
+    label->setObjectName("count");
+    return label;
+}
+
+/// A rounded card: header row (icon, title, extras), a partition line, then the body.
+QFrame *card(const QString &iconName, QWidget *title, const QList<QWidget *> &extras, QLayout *body)
+{
+    auto *frame = new QFrame;
+    frame->setObjectName("card");
+    auto *v = new QVBoxLayout(frame);
+    v->setContentsMargins(14, 12, 14, 12);
+    v->setSpacing(8);
+    auto *header = new QHBoxLayout;
+    header->setSpacing(8);
+    if (!iconName.isEmpty()) {
+        auto *ic = new QLabel;
+        ic->setPixmap(Theme::icon(iconName).pixmap(20, 20));
+        header->addWidget(ic);
+    }
+    header->addWidget(title);
+    for (QWidget *w : extras) {
+        if (w) header->addWidget(w);
+        else header->addStretch(1);
+    }
+    v->addLayout(header);
+    v->addWidget(divider());
+    v->addLayout(body, 1);
+    return frame;
+}
+
 } // namespace
 
 LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     : QWidget(parent), m_ctx(ctx), m_thumbs(new Thumbnails(this)), m_folder(QSettings().value("ui/homeFolder", kAll).toString())
 {
     m_banner = new QFrame;
-    m_banner->setStyleSheet("QFrame { background: palette(alternate-base); border-radius: 8px; }");
-    auto *bannerText = new QLabel("Sign in with Google to keep your PDFs, folders, notes and saved words on all your "
-                                  "devices — including the PenReader Android app.");
+    m_banner->setObjectName("banner");
+    auto *bannerIcon = new QLabel;
+    bannerIcon->setPixmap(Theme::icon("cloud").pixmap(30, 30));
+    auto *bannerText = new QLabel("<b>Sync across your devices</b><br>Sign in with Google to keep your PDFs, folders, "
+                                  "notes and saved words everywhere, including the PenReader Android app.");
     bannerText->setWordWrap(true);
-    auto *signIn = new QPushButton("Sign in");
+    auto *signIn = new QPushButton("Sign in with Google");
+    signIn->setProperty("accent", true);
+    signIn->setCursor(Qt::PointingHandCursor);
     connect(signIn, &QPushButton::clicked, this, &LibraryView::signInRequested);
     auto *bannerLayout = new QHBoxLayout(m_banner);
+    bannerLayout->setContentsMargins(16, 12, 16, 12);
+    bannerLayout->setSpacing(14);
+    bannerLayout->addWidget(bannerIcon);
     bannerLayout->addWidget(bannerText, 1);
     bannerLayout->addWidget(signIn);
 
@@ -80,32 +128,35 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     });
     auto *newFolder = new QPushButton(icon("folder-plus"), "New folder");
     connect(newFolder, &QPushButton::clicked, this, [this] { newFolderDialog(currentFolderId()); });
+    newFolder->setFlat(true);
+    newFolder->setCursor(Qt::PointingHandCursor);
     auto *foldersCol = new QVBoxLayout;
     foldersCol->setContentsMargins(0, 0, 0, 0);
-    foldersCol->addWidget(heading("Folders", 1.25));
     foldersCol->addWidget(m_folders, 1);
-    foldersCol->addWidget(newFolder);
-    auto *foldersPane = new QWidget;
-    foldersPane->setLayout(foldersCol);
+    foldersCol->addWidget(divider());
+    foldersCol->addWidget(newFolder, 0, Qt::AlignLeft);
+    auto *foldersTitle = heading("Folders", 1.08);
+    foldersTitle->setObjectName("cardTitle");
+    QFrame *foldersPane = card("library", foldersTitle, {nullptr}, foldersCol);
 
     // ---- Current folder (middle)
-    m_up = new QPushButton(icon("back"), "Up");
+    m_up = new QPushButton(icon("back"), "");
+    m_up->setFlat(true);
     m_up->setToolTip("Parent folder (h)");
     connect(m_up, &QPushButton::clicked, this, &LibraryView::goUp);
     m_crumb = new QLabel;
     QFont cf = m_crumb->font();
-    cf.setPointSizeF(cf.pointSizeF() * 1.25);
-    cf.setBold(true);
+    cf.setPointSizeF(cf.pointSizeF() * 1.08);
     m_crumb->setFont(cf);
+    m_crumb->setObjectName("cardTitle");
+    m_docCount = chip();
     m_search = new QLineEdit;
     m_search->setPlaceholderText("Search all PDFs…");
     m_search->setClearButtonEnabled(true);
     m_search->setMaximumWidth(280);
+    m_search->setMinimumWidth(200);
+    m_search->addAction(icon("search"), QLineEdit::LeadingPosition);
     connect(m_search, &QLineEdit::textChanged, this, &LibraryView::refreshDocuments);
-    auto *crumbRow = new QHBoxLayout;
-    crumbRow->addWidget(m_up);
-    crumbRow->addWidget(m_crumb, 1);
-    crumbRow->addWidget(m_search);
 
     // A grid of square tiles: the page each PDF is open at, with its name underneath.
     m_list = new QListWidget;
@@ -113,8 +164,10 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     m_list->setMovement(QListView::Static);
     m_list->setResizeMode(QListView::Adjust);
     m_list->setIconSize(QSize(150, 150));
-    m_list->setGridSize(QSize(178, 226));
-    m_list->setSpacing(6);
+    m_list->setGridSize(TileDelegate::tileSize());
+    m_list->setItemDelegate(new TileDelegate(m_list));
+    m_list->setMouseTracking(true); // hover highlight on tiles
+    m_list->setSpacing(0);
     m_list->setWordWrap(true);
     m_list->setUniformItemSizes(true);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -132,22 +185,26 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     m_empty = new QLabel;
     m_empty->setAlignment(Qt::AlignCenter);
     m_empty->setWordWrap(true);
-    m_empty->setStyleSheet("color: gray;");
+    m_empty->setObjectName("muted");
     auto *docsCol = new QVBoxLayout;
     docsCol->setContentsMargins(0, 0, 0, 0);
-    docsCol->addLayout(crumbRow);
-    docsCol->addWidget(new QLabel("<span style='color:gray'>Double-click to open · drag PDFs onto a folder to file "
-                                  "them · right-click for more</span>"));
+    auto *hint = new QLabel("Double-click to open · drag PDFs onto a folder to file them · right-click for more");
+    hint->setObjectName("muted");
+    docsCol->addWidget(hint);
     docsCol->addWidget(m_list, 1);
     docsCol->addWidget(m_empty, 1);
-    auto *docsPane = new QWidget;
-    docsPane->setLayout(docsCol);
+    QFrame *docsPane = card({}, m_up, {m_crumb, m_docCount, nullptr, m_search}, docsCol);
 
     // ---- Recently learnt words (right)
-    m_wordsTitle = heading("Recently learnt words", 1.25);
+    m_wordsTitle = heading("Recently learnt", 1.08);
+    m_wordsTitle->setObjectName("cardTitle");
+    m_wordsCount = chip();
     m_words = new QListWidget;
-    m_words->setWordWrap(true);
-    m_words->setSpacing(2);
+    m_words->setItemDelegate(new WordDelegate(m_words));
+    m_words->setMouseTracking(true);
+    m_words->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_words->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_words->setResizeMode(QListView::Adjust);
     m_words->installEventFilter(this);
     connect(m_words, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
         emit wordRequested(item->data(kIdRole).toString());
@@ -155,15 +212,16 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     auto *allWords = new QPushButton("See all in My Words →");
     allWords->setFlat(true);
     connect(allWords, &QPushButton::clicked, this, &LibraryView::myWordsRequested);
+    allWords->setCursor(Qt::PointingHandCursor);
     auto *wordsCol = new QVBoxLayout;
     wordsCol->setContentsMargins(0, 0, 0, 0);
-    wordsCol->addWidget(m_wordsTitle);
     wordsCol->addWidget(m_words, 1);
+    wordsCol->addWidget(divider());
     wordsCol->addWidget(allWords, 0, Qt::AlignRight);
-    auto *wordsPane = new QWidget;
-    wordsPane->setLayout(wordsCol);
+    QFrame *wordsPane = card("words", m_wordsTitle, {m_wordsCount, nullptr}, wordsCol);
 
     auto *splitter = new QSplitter;
+    splitter->setHandleWidth(14); // the gap between cards
     splitter->addWidget(foldersPane);
     splitter->addWidget(docsPane);
     splitter->addWidget(wordsPane);
@@ -172,8 +230,23 @@ LibraryView::LibraryView(AppContext &ctx, QWidget *parent)
     splitter->setStretchFactor(2, 3);
     splitter->setSizes({230, 600, 330});
 
+    // Page header: title and a one-line summary of the library.
+    auto *pageTitle = new QLabel("Library");
+    pageTitle->setObjectName("pageTitle");
+    QFont tf = pageTitle->font();
+    tf.setPointSizeF(tf.pointSizeF() * 1.6);
+    pageTitle->setFont(tf);
+    m_stats = new QLabel;
+    m_stats->setObjectName("muted");
+    auto *top = new QHBoxLayout;
+    top->setSpacing(12);
+    top->addWidget(pageTitle, 0, Qt::AlignBottom);
+    top->addWidget(m_stats, 1, Qt::AlignBottom);
+
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(20, 12, 20, 12);
+    layout->setContentsMargins(18, 14, 18, 14);
+    layout->setSpacing(12);
+    layout->addLayout(top);
     layout->addWidget(m_banner);
     layout->addWidget(splitter, 1);
 
@@ -213,6 +286,19 @@ void LibraryView::refresh()
         m_folder = kAll; // deleted here or on another device
     refreshFolders();
     refreshDocuments();
+    refreshStats();
+}
+
+void LibraryView::refreshStats()
+{
+    const int docs = int(m_ctx.docs->library().size());
+    const int folders = int(m_ctx.docs->folders().size());
+    const int words = int(m_ctx.vocab->words().size());
+    auto n = [](int count, const QString &one, const QString &many) {
+        return QStringLiteral("%1 %2").arg(count).arg(count == 1 ? one : many);
+    };
+    m_stats->setText(n(docs, "PDF", "PDFs") + "  ·  " + n(folders, "folder", "folders") + "  ·  " +
+                     n(words, "word learnt", "words learnt"));
 }
 
 void LibraryView::selectFolder(const QString &id)
@@ -357,6 +443,7 @@ void LibraryView::refreshDocuments()
         }
         auto *item = new QListWidgetItem(m_thumbs->icon(d), d.title + "\n" + badge);
         item->setData(kIdRole, d.docKey);
+        item->setData(HomeRoles::Percent, d.onDevice() || d.inCloud() ? percent : -1);
         item->setData(kKindRole, "doc");
         item->setToolTip(d.title + "\n" + status);
         if (m_open.contains(d.docKey)) {
@@ -371,6 +458,10 @@ void LibraryView::refreshDocuments()
             item->setSelected(true);
     }
 
+    int docItems = 0;
+    for (int i = 0; i < m_list->count(); ++i) docItems += m_list->item(i)->data(kKindRole) == "doc";
+    m_docCount->setText(QString::number(docItems));
+    m_docCount->setVisible(docItems > 0);
     const bool empty = m_list->count() == 0;
     m_list->setVisible(!empty);
     m_empty->setVisible(empty);
@@ -565,8 +656,9 @@ void LibraryView::deleteFolderAsk(const QString &folderId)
 void LibraryView::refreshWords()
 {
     const QVector<VocabWord> words = m_ctx.vocab->words();
-    m_wordsTitle->setText(QStringLiteral("Recently learnt words (%1)").arg(words.size()));
+    m_wordsCount->setText(QString::number(words.size()));
     m_words->clear();
+    if (m_stats) refreshStats();
     if (words.isEmpty()) {
         auto *hint = new QListWidgetItem("Words you save from the dictionary appear here.");
         hint->setFlags(Qt::NoItemFlags);
@@ -575,11 +667,10 @@ void LibraryView::refreshWords()
     }
     for (int i = 0; i < words.size() && i < 12; ++i) {
         const VocabWord &w = words[i];
-        QString text = w.word;
-        if (!w.tamil.isEmpty()) text += "  ·  " + w.tamil;
-        text += "\n" + w.definition.left(110) + (w.definition.size() > 110 ? "…" : "");
-        auto *item = new QListWidgetItem(text);
+        auto *item = new QListWidgetItem(w.word + (w.tamil.isEmpty() ? QString() : "  ·  " + w.tamil) + "\n" + w.definition);
         item->setData(kIdRole, w.word);
+        item->setData(HomeRoles::Tamil, w.tamil);
+        item->setData(HomeRoles::Detail, w.definition);
         m_words->addItem(item);
     }
 }

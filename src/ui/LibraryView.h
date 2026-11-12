@@ -64,6 +64,10 @@ private:
     QLabel *m_empty;
     QListWidget *m_words;
     QLabel *m_wordsTitle;
+    QLabel *m_wordsCount = nullptr;
+    QLabel *m_docCount = nullptr;
+    QLabel *m_stats = nullptr;
+    void refreshStats();
     QSet<QString> m_open;
     QString m_folder; ///< folder id, or kAll / kUnfiled
     QTimer m_refreshTimer;

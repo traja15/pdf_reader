@@ -16,6 +16,13 @@ bool isDark();
 /// Applies the window theme (Fusion palette). Call at start-up and after changing the mode.
 void apply();
 
+/// Design colours for the current theme (cards, dividers, accent…), used by the stylesheet and
+/// by custom-drawn views such as the Home tiles.
+struct Tokens {
+    QColor window, card, cardTop, border, divider, hover, text, muted, accent, accent2, accentSoft, onAccent, shadow;
+};
+const Tokens &tokens();
+
 /// Toolbar icon tinted for the current theme.
 QIcon icon(const QString &name);
 

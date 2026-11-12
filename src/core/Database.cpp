@@ -31,6 +31,9 @@ void Database::init(const QString &path)
             word TEXT PRIMARY KEY NOT NULL, json TEXT NOT NULL, fetchedAt INTEGER NOT NULL))",
         R"(CREATE TABLE IF NOT EXISTS tamil_cache (
             word TEXT PRIMARY KEY NOT NULL, json TEXT NOT NULL, fetchedAt INTEGER NOT NULL))",
+        R"(CREATE TABLE IF NOT EXISTS translation_cache (
+            source TEXT NOT NULL, target TEXT NOT NULL, translation TEXT NOT NULL, fetchedAt INTEGER NOT NULL,
+            PRIMARY KEY (source, target)))",
     };
     for (const char *sql : schema) {
         if (!q.exec(QString::fromUtf8(sql)))
